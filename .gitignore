@@ -1,0 +1,51 @@
+# === 文档与会话（不纳入版本控制） ===
+# docs/
+# ChatsDocs/
+
+# === 运行时数据（TECH_STACK.md §8: data/ 标注 gitignore） ===
+data/
+
+# === 环境变量（含 API Key，绝不入库） ===
+.env
+.env.*
+!.env.example
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.db
+*.sqlite3
+
+# === Node / 前端 ===
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+*.tsbuildinfo
+coverage/
+
+# === IDE / 编辑器 ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === 操作系统 ===
+.DS_Store
+Thumbs.db
+
+# === 本地调试 / Cursor ===
+debug-*.log
+.cursor/

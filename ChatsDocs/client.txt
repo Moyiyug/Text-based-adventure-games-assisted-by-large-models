@@ -1,0 +1,5 @@
+cd /d d:\MyProject\Python_Project\RAG\backend
+uvicorn app.main:app --reload --port 8000
+
+cd /d d:\MyProject\Python_Project\RAG\frontend
+npm run dev

@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+/* ============================================
+   语义色（:root / 管理路由）→ Tailwind 通过 @theme 引用 var()
+   这样 .admin 与 body.admin-route 下所有工具类（含 Portal）一致浅色
+   参照 FRONTEND_GUIDELINES.md §2.1 / §2.2、RULES.md
+   ============================================ */
+
+:root {
+  /* --- 游玩页 Dark --- */
+  --bg-primary: #0f0f14;
+  --bg-secondary: #1a1a2e;
+  --bg-hover: #252540;
+  --text-primary: #e8e0d4;
+  --text-secondary: #9a9ab0;
+  --accent-primary: #d4a853;
+  --accent-secondary: #4ade80;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --success: #4ade80;
+  --border: #2a2a45;
+  --gm-text: #d4a853;
+  --player-text: #e8e0d4;
+  --system-text: #9a9ab0;
+
+  --badge-strict-bg: #1e3a5f;
+  --badge-strict-text: #93c5fd;
+  --badge-strict-border: #3b82f6;
+  --badge-creative-bg: #3b2f1a;
+  --badge-creative-text: #fbbf24;
+  --badge-creative-border: #d4a853;
+
+  --font-stack-story: "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
+  --font-stack-ui: "Inter", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-stack-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
+
+  font-family: var(--font-stack-ui);
+  color: var(--text-primary);
+  background-color: var(--bg-primary);
+}
+
+/* 管理后台：侧栏内布局 + body 挂类时整页（含 Radix Portal）统一浅色 */
+.admin,
+body.admin-route {
+  --bg-primary: #f8f9fa;
+  --bg-secondary: #ffffff;
+  --bg-hover: #f3f4f6;
+  --text-primary: #1a1a2e;
+  --text-secondary: #6b7280;
+  --accent-primary: #4f46e5;
+  --accent-secondary: #059669;
+  --danger: #dc2626;
+  --warning: #d97706;
+  --success: #059669;
+  --border: #e5e7eb;
+  --gm-text: #4f46e5;
+  --player-text: #1a1a2e;
+  --system-text: #6b7280;
+
+  color: var(--text-primary);
+  background-color: var(--bg-primary);
+}
+
+@theme {
+  /* Tailwind 颜色 → 继承当前作用域语义变量（随 .admin / body.admin-route 切换） */
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-hover: var(--bg-hover);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-accent-primary: var(--accent-primary);
+  --color-accent-secondary: var(--accent-secondary);
+  --color-danger: var(--danger);
+  --color-warning: var(--warning);
+  --color-success: var(--success);
+  --color-border: var(--border);
+  --color-gm-text: var(--gm-text);
+  --color-player-text: var(--player-text);
+  --color-system-text: var(--system-text);
+
+  /* 文档中的 admin-* 令牌（按需用于 admin: 前缀或任意值） */
+  --color-admin-bg-primary: var(--bg-primary);
+  --color-admin-bg-card: var(--bg-secondary);
+  --color-admin-text-primary: var(--text-primary);
+  --color-admin-text-secondary: var(--text-secondary);
+  --color-admin-accent: var(--accent-primary);
+  --color-admin-table-stripe: var(--bg-hover);
+  --color-admin-border: var(--border);
+
+  --font-story: var(--font-stack-story);
+  --font-ui: var(--font-stack-ui);
+  --font-mono: var(--font-stack-mono);
+}
