@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
+    # --- Narrative safety (Phase 4.6) ---
+    # 为 True 时：开场在落库前对叙事正文额外调用一次 DeepSeek 做软化（流式回合暂不软化，避免与已推送 token 不一致）。
+    NARRATIVE_SAFETY_SOFTEN: bool = False
+
     # --- App ---
     APP_ENV: str = "development"
     APP_DEBUG: bool = True

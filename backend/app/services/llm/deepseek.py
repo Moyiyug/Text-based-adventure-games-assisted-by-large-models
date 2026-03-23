@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 
 import httpx
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI
@@ -127,5 +128,54 @@ async def deepseek_chat(
             raise RuntimeError(f"DeepSeek 调用失败: {last_err}") from last_err
         raise RuntimeError("DeepSeek 调用失败: 未知原因")
 
+    finally:
+        await client.close()
+
+
+async def deepseek_chat_stream(
+    messages: list[dict[str, str]],
+    *,
+    temperature: float = 0.3,
+    timeout: float = 120.0,
+) -> AsyncIterator[str]:
+    """
+    流式输出文本 delta（不含工具调用）。错误时向上抛，由 narrative 层转 SSE error。
+    """
+    api_key = _deepseek_api_key()
+    if not api_key:
+        raise RuntimeError("DEEPSEEK_API_KEY 未配置，无法调用 DeepSeek API")
+
+    base = settings.DEEPSEEK_BASE_URL.rstrip("/")
+    connect_timeout = min(45.0, max(15.0, timeout * 0.25))
+    httpx_timeout = httpx.Timeout(connect=connect_timeout, read=timeout, write=timeout, pool=timeout)
+
+    http_client = httpx.AsyncClient(
+        trust_env=False,
+        timeout=httpx_timeout,
+        limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+    )
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url=base,
+        http_client=http_client,
+        max_retries=2,
+    )
+    try:
+        stream = await client.chat.completions.create(
+            model=settings.DEEPSEEK_MODEL,
+            messages=messages,
+            temperature=temperature,
+            stream=True,
+        )
+        async for chunk in stream:
+            choice0 = chunk.choices[0] if chunk.choices else None
+            if choice0 is None:
+                continue
+            delta = getattr(choice0, "delta", None)
+            if delta is None:
+                continue
+            piece = getattr(delta, "content", None)
+            if piece:
+                yield str(piece)
     finally:
         await client.close()

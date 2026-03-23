@@ -322,15 +322,15 @@
 
 ### 4.1 会话数据模型（Day 17）
 
-- [ ] 创建所有会话相关 ORM 模型：`Session`、`SessionState`、`SessionEvent`、`SessionMessage`、`UserFeedback`。
-- [ ] 创建 `PromptTemplate` ORM 模型。
-- [ ] 生成并执行 Alembic 迁移。
-- [ ] 创建提示词 seed 脚本：预置四层提示词模板（system / retrieval / gm / style）× 两种模式。
+- [x] 创建所有会话相关 ORM 模型：`Session`、`SessionState`、`SessionEvent`、`SessionMessage`、`UserFeedback`。
+- [x] 创建 `PromptTemplate` ORM 模型。
+- [x] 生成并执行 Alembic 迁移。（迁移文件 `d4e5f6a7b8c9`，`down_revision=b7c4e2d1a9f0`；若本地 `alembic_version` 与仓库链不一致需先 `stamp`/`修复` 后再 `upgrade head`）
+- [x] 创建提示词 seed 脚本：预置四层提示词模板（system / retrieval / gm / style）× 两种模式。
 - [ ] 验证：迁移执行成功，SQLite 中可见 sessions、session_states、prompt_templates 等表。
 
 ### 4.2 会话管理 API（Day 17-18）
 
-- [ ] 创建 `app/api/sessions.py`：
+- [x] 创建 `app/api/sessions.py`：
   - `POST /api/sessions`：创建会话，绑定 story_version + rag_config + mode。
   - `GET /api/sessions`：列出我的会话。
   - `GET /api/sessions/{id}`：会话详情。
@@ -339,21 +339,21 @@
   - `GET /api/sessions/{id}/messages`：消息列表。
   - `GET /api/sessions/{id}/state`：当前状态。
   - `POST /api/sessions/{id}/feedback`：提交反馈。
-- [ ] 验证：创建会话 → 查看 → 归档 → 删除。
+- [ ] 验证：创建会话 → 查看 → 归档 → 删除。（`POST .../messages` 流式见 Phase 4.4）
 
 ### 4.3 提示词系统（Day 18）
 
-- [ ] 创建 `app/services/narrative/prompts.py`：
+- [x] 创建 `app/services/narrative/prompts.py`：
   - `build_system_prompt(mode, style_config) → str`：拼装系统 + GM + 风格层。
   - `build_retrieval_prompt(context) → str`：拼装检索证据。
   - `build_generation_prompt(user_input, context, state, profile) → messages[]`：组装最终的消息列表。
   - 提示词需包含**叙事角色切换**指令：默认以 GM 裁定者身份叙事；当场景聚焦于与某个 NPC 互动时（由 `state_update.npc_relations` 判断），切换为该角色口吻对话（参见 PRD F04）。`npc_relations` 字段的 schema 在 4.4 状态管理中定义，此处先在提示词中预设格式约定。
-- [ ] 确保输出指令要求模型使用 `\n---META---\n` 分隔符协议（参见 `BACKEND_STRUCTURE.md` §4.4.1），先输出纯叙事文本，分隔符后输出 JSON 元数据。
-- [ ] 验证：调用 `build_generation_prompt` 返回符合预期结构的 messages 列表，其中 system prompt 包含分隔符格式要求和角色切换指令。
+- [x] 确保输出指令要求模型使用 `\n---META---\n` 分隔符协议（参见 `BACKEND_STRUCTURE.md` §4.4.1），先输出纯叙事文本，分隔符后输出 JSON 元数据。
+- [x] 验证：调用 `build_generation_prompt` 返回符合预期结构的 messages 列表，其中 system prompt 包含分隔符格式要求和角色切换指令。（`tests/test_narrative_prompts.py`）
 
 ### 4.3b 管理员提示词 API（Day 18）
 
-- [ ] 创建 `app/api/admin/prompts.py`（参见 `BACKEND_STRUCTURE.md` §2.7）：
+- [x] 创建 `app/api/admin/prompts.py`（参见 `BACKEND_STRUCTURE.md` §2.7）：
   - `GET /api/admin/prompts`：列出所有提示词模板（按 layer × mode 分组）。
   - `PUT /api/admin/prompts/{id}`：更新提示词内容。
   - `POST /api/admin/prompts`：新增提示词模板。
@@ -361,7 +361,7 @@
 
 ### 4.3c 管理员会话查看 API（Day 18）
 
-- [ ] 创建 `app/api/admin/sessions.py`（参见 `BACKEND_STRUCTURE.md` §2.10）：
+- [x] 创建 `app/api/admin/sessions.py`（参见 `BACKEND_STRUCTURE.md` §2.10）：
   - `GET /api/admin/sessions`：所有用户会话列表（支持按 story、user、status 筛选）。
   - `GET /api/admin/sessions/{id}/transcript`：完整对话记录。
   - `GET /api/admin/sessions/{id}/feedback`：用户反馈列表。
@@ -369,20 +369,20 @@
 
 ### 4.4 状态管理（Day 19）
 
-- [ ] 创建 `app/services/narrative/state.py`：
+- [x] 创建 `app/services/narrative/state.py`：
   - `initialize_state(session) → state_dict`：创建初始状态 {current_location, active_goal, important_items, npc_relations}。
   - `validate_state_update(current_state, proposed_update) → validated_update`：软校验。
   - `apply_state_update(session_id, turn, update)`：写入 DB。
-- [ ] 验证：创建初始状态 → 模拟状态更新 → 验证数据库写入。
+- [x] 验证：创建初始状态 → 模拟状态更新 → 验证数据库写入。（`tests/test_narrative_state.py`）
 
 ### 4.5 叙事生成核心（Day 19-20）
 
-- [ ] 创建 `app/services/narrative/engine.py`：
-  - `generate_opening(session) → NarrativeResponse`：生成开场白（非流式调用，直接返回完整结果）。
-  - `process_turn(session_id, user_input) → AsyncIterator[SSEEvent]`：
+- [x] 创建 `app/services/narrative/engine.py`：
+  - `generate_opening`：非流式开场 + 落库；玩家 `POST /api/sessions/{id}/opening`。
+  - `process_turn_sse`：`POST /api/sessions/{id}/messages` 流式 SSE（`data: {json}\\n\\n`），等价规划中的 `process_turn → AsyncIterator[SSEEvent]`：
     1. 加载会话状态与历史。
     2. 调用 RAG 检索。
-    3. 拼装上下文（画像层在 4.8 接入前传空占位，4.8 完成后替换为真实画像）。
+    3. 拼装上下文（`assemble_context` 注入 `user_profiles` / `story_profiles`，见 4.8）。
     4. 调用 DeepSeek `stream=True`。
     5. **分隔符流式协议解析**（详见 `BACKEND_STRUCTURE.md` §4.4）：
        - 逐 token 检测 `---META---` 分隔符。
@@ -393,31 +393,35 @@
     8. 记录 `internal_notes` 到日志。
     9. Yield `SSEEvent(type=choices)` → `SSEEvent(type=state_update)` → `SSEEvent(type=done)`。
   - **异常路径**：JSON 解析失败或未检测到分隔符时，`choices` 和 `state_update` 置空，发送 `type=error` 提示，记录错误日志。
-- [ ] 验证：调用 `generate_opening` 返回完整开场白；调用 `process_turn` 收到含 `---META---` 分隔符的流式输出，成功解析出 choices 和 state_update。
+- [ ] 验证：调用 `generate_opening` / 流式 `messages` 在真实 DeepSeek 下端到端成功。（单测：`tests/test_meta_parse.py`）
+- [x] 补充：`deepseek_chat_stream`、`meta_parse.py`（`MetaStreamSplitter` / `parse_complete_model_output`）。
 
 ### 4.6 内容安全层（Day 20）
 
-- [ ] 创建 `app/services/narrative/safety.py`：
+- [x] 创建 `app/services/narrative/safety.py`：
   - `soften_content(text) → str`：调用 DeepSeek 对高风险输出做文艺化改写。
-  - `handle_api_block(session_id, user_input) → fallback_response`：风控拦截时的退化处理。
-- [ ] 在 `process_turn` 中集成安全层。
-- [ ] 验证：对高风险样本调用 `soften_content` 得到改写结果；模拟风控拦截时返回 fallback_response。
+  - `handle_api_block(session_id, user_input) → FallbackNarrative`：风控拦截时的退化处理（结构化 narrative / choices / log_message）。
+  - `is_likely_content_policy_block(exc)`：根据 `RuntimeError` / `APIStatusError` 文案与状态码粗判内容策略拦截。
+- [x] 在 `generate_opening` / `process_turn_sse` 中集成安全层：
+  - 开场：`deepseek_chat` 拦截 → 落库 `handle_api_block` 文案；可选 `NARRATIVE_SAFETY_SOFTEN=true` 时对开场叙事再调用 `soften_content`（**流式回合暂不软化**，避免与已推送 `token` 不一致）。
+  - 流式：`deepseek_chat_stream` 拦截 → `rollback` 本轮（含 user 消息）+ SSE `error` + `done`，不落库 fallback。
+- [x] 验证：`tests/test_safety.py`（mock `soften_content` / 流式拦截 + rollback）；高风险样本集成测需真实 API，见脚本验收。
 
 ### 4.7 流式 API（Day 20-21）
 
-- [ ] 创建 `POST /api/sessions/{id}/messages` 的 SSE 流式实现：
-  - 使用 `StreamingResponse(media_type="text/event-stream")`。
-  - 事件类型：`token`、`choices`、`state_update`、`error`、`done`。
-  - 前端须使用 `fetch` + `ReadableStream` 手动解析（不可用 `EventSource`，因为是 POST + Bearer 鉴权）。
-- [ ] 验证：用 `curl -N -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" -d '{"content":"..."}' http://localhost:8000/api/sessions/{id}/messages` 测试 SSE 流。
+- [x] 创建 `POST /api/sessions/{id}/messages` 的 SSE 流式实现（已落地）：
+  - 路由：[`app/api/sessions.py`](RAG/backend/app/api/sessions.py) `stream_session_message` → `StreamingResponse(media_type="text/event-stream; charset=utf-8")`。
+  - 生成：[`app/services/narrative/engine.py`](RAG/backend/app/services/narrative/engine.py) `process_turn_sse`，事件类型 `token`、`choices`、`state_update`、`error`、`done`。
+  - 前端须使用 `fetch` + `ReadableStream` 手动解析（不可用 `EventSource`，因为是 POST + Bearer 鉴权）。→ 见 Phase 4.11。
+- [x] 验证：见 [`scripts/verify_phase4_backend.py`](RAG/backend/scripts/verify_phase4_backend.py)（`SKIP_LLM` 未设时跑 SSE）；文档字符串内附 **curl** 示例；单测 `tests/test_safety.py::test_process_turn_sse_content_policy_rollback` 覆盖错误路径序列。
 
 ### 4.8 画像检索集成（Day 21）
 
-- [ ] 在 `context.py` 中集成用户画像层：
-  - 从 `user_profiles` 取全局画像。
-  - 从 `story_profiles` 取作品覆写。
-  - 拼入上下文。
-- [ ] 验证：调用 `assemble_context` 时返回的 prompt_parts 包含 user_profiles / story_profiles 内容；用 curl 完成多轮对话确认画像已参与生成。
+- [x] 在 `context.py` 中集成用户画像层：
+  - 加载：[`app/services/profile_loader.py`](RAG/backend/app/services/profile_loader.py) `load_session_profile_bundle`（`user_profiles` + `story_profiles`）。
+  - 拼入：[`app/services/rag/context.py`](RAG/backend/app/services/rag/context.py) `assemble_context` 前置 `[用户画像-全局]` / `[用户画像-本作品覆写]`，预算不足时先丢检索尾部。
+  - `build_generation_prompt`：画像默认仅经检索块注入；仅当显式传入非空 `profile` 时保留 tail「用户画像/作品覆写 JSON」（兼容旧调用）。
+- [x] 验证：`tests/test_context_profile.py`；`session_messages.metadata` 增加 `profile_context_used`；多轮 curl / `verify_phase4_backend` 需在 DB 中有画像数据时人工确认。
 
 ### ── 前端 ──
 

@@ -1,4 +1,4 @@
-"""将 RetrievalResult 压入 Token 预算内的上下文字符串。参照 IMPLEMENTATION_PLAN 3.5。"""
+"""将 RetrievalResult 压入 Token 预算内的上下文字符串。参照 IMPLEMENTATION_PLAN 3.5、4.8。"""
 
 from __future__ import annotations
 
@@ -23,6 +23,24 @@ def _get_encoder():
         return None
 
 
+def _profile_blocks(profile: dict[str, Any] | None) -> list[str]:
+    """高优先级前置块：全局偏好 + 本作品覆写。"""
+    if not profile:
+        return []
+    blocks: list[str] = []
+    prefs = profile.get("user_preferences") or {}
+    if prefs:
+        blocks.append(
+            f"[用户画像-全局]\n{json.dumps(prefs, ensure_ascii=False)}"
+        )
+    over = profile.get("story_overrides") or {}
+    if over:
+        blocks.append(
+            f"[用户画像-本作品覆写]\n{json.dumps(over, ensure_ascii=False)}"
+        )
+    return blocks
+
+
 def assemble_context(
     retrieved: RetrievalResult,
     *,
@@ -32,12 +50,14 @@ def assemble_context(
     profile: dict[str, Any] | None = None,
 ) -> str:
     """
-    按优先级拼接：结构化事实 → 文本块（含 parent_child 的父级说明）。
-    超出 token_budget 时从尾部截断（先丢文本块尾部，再丢结构化尾部）。
+    按优先级拼接：用户画像（全局 + 作品覆写）→ 结构化事实 → 文本块。
+    超出 token_budget 时从尾部整块移除（先丢检索块，画像块最后丢）。
     """
-    _ = mode, session_state, profile  # Phase 4 使用
+    _ = mode, session_state
     enc = _get_encoder()
     parts: list[str] = []
+
+    parts.extend(_profile_blocks(profile))
 
     for sh in retrieved.structured:
         line = f"[{sh.kind}] {json.dumps(sh.payload, ensure_ascii=False)}"
@@ -50,20 +70,21 @@ def assemble_context(
             block = ch.content
         parts.append(block)
 
-    full = "\n\n---\n\n".join(parts) if parts else ""
-    if not full.strip():
+    if not parts:
         return ""
 
+    def _joined() -> str:
+        return "\n\n---\n\n".join(parts)
+
+    full = _joined()
     if _approx_tokens(full, enc) <= token_budget:
         return full
 
-    # 从后往前去掉整块直至满足预算
-    while parts and _approx_tokens("\n\n---\n\n".join(parts), enc) > token_budget:
+    while parts and _approx_tokens(_joined(), enc) > token_budget:
         parts.pop()
 
-    out = "\n\n---\n\n".join(parts)
+    out = _joined()
     if _approx_tokens(out, enc) > token_budget and out:
-        # 最后一块硬截断
         while out and _approx_tokens(out, enc) > token_budget:
             out = out[: max(0, len(out) - 200)]
         out = out.rstrip() + "\n…[上下文已截断]"

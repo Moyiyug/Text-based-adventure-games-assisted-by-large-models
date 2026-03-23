@@ -1,6 +1,6 @@
 ========================================
   RAG 交互式叙事冒险平台 — 进度追踪
-  最后更新: 2026-03-21
+  最后更新: 2026-03-23
 ========================================
 
 【已完成】
@@ -59,7 +59,7 @@
       - 验证通过：注册→登录→/me→修改昵称→刷新确认 全流程 E2E 通过
 
 【进行中】
-- [~] Phase 4+：会话与叙事引擎等（见 IMPLEMENTATION_PLAN）
+- [~] Phase 4.11+：前端游玩页 `fetch`+ReadableStream 消费 SSE、状态面板等（见 IMPLEMENTATION_PLAN）
 
 【已完成 · 续】
 - [x] Phase 2.7–2.9：safety.py、embeddings + Chroma indexer、ingestion pipeline（BackgroundTasks）
@@ -80,7 +80,25 @@
       - 路由：/admin → /admin/stories，/admin/metadata，/admin/rag-config；管理区隐藏 TopNav
 
 【下一步】
-- Phase 4：会话 API 与游玩流程（见 IMPLEMENTATION_PLAN）
+- Phase 4.9+：故事库 / 新会话 / 游玩页与 SSE 前端集成
+
+【Phase 4.6–4.8 后端 · 2026-03-23】
+- `app/services/profile_loader.py`：`load_session_profile_bundle`；`assemble_context` 前置用户画像块；`engine` 传 `profile=None` 至 `build_generation_prompt`（避免与检索块重复）；`metadata.profile_context_used`
+- `app/services/narrative/safety.py`：`soften_content`、`handle_api_block`、`is_likely_content_policy_block`；开场拦截落库降级文案；流式拦截 rollback + SSE error；`NARRATIVE_SAFETY_SOFTEN` 仅作用于开场软化
+- 文档：`IMPLEMENTATION_PLAN` 4.6–4.8 勾选；`scripts/verify_phase4_backend.py` 补充 curl 说明
+- 测试：`test_context_profile.py`、`test_safety.py`
+
+【Phase 4.3b–4.5 后端 · 2026-03-23】
+- `GET/PUT/POST /api/admin/prompts`；`GET /api/admin/sessions`（筛选+分页）+ `…/transcript` + `…/feedback`
+- `narrative/state.py`、`meta_parse.py`、`deepseek_chat_stream`、`narrative/engine.py`
+- `POST /api/sessions/{id}/opening`、`POST /api/sessions/{id}/messages`（`text/event-stream`；独立 `async_session_factory` 会话）
+- 测试：`test_narrative_state.py`、`test_meta_parse.py`
+
+【Phase 4.1–4.3 后端 · 2026-03-22】
+- ORM：`app/models/session.py`、`prompt_template.py`；迁移 `d4e5f6a7b8c9_add_sessions_and_prompt_templates.py`
+- `scripts/seed_prompt_templates.py`（8 条）；`require_session_owner`；`app/api/sessions.py` + `schemas/session.py`；`main` 注册 `/api/sessions`
+- `app/services/narrative/prompts.py`：`load_prompt_templates`、`build_system_prompt`、`build_retrieval_prompt`、`build_generation_prompt`
+- 测试：`test_narrative_prompts.py`、`test_sessions_smoke.py`
 
 【Phase 3.6 前端 · 2026-03-21】
 - `/admin/rag-config` + 侧栏「RAG 方案配置」；`useRagConfigs` / `useUpdateRagConfig` / `useActivateRagConfig`（mutation 返回解包 `data`）

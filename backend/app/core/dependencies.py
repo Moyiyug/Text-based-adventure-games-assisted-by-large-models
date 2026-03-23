@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import decode_access_token
+from app.models.session import Session as NarrativeSession
 from app.models.user import User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
@@ -44,3 +45,18 @@ async def require_admin(
             detail="需要管理员权限",
         )
     return user
+
+
+async def require_session_owner(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> NarrativeSession:
+    """校验会话属于当前用户；不存在或越权统一 404。"""
+    sess = await db.get(NarrativeSession, session_id)
+    if sess is None or sess.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="会话不存在",
+        )
+    return sess

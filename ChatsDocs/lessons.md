@@ -111,6 +111,22 @@
 
 **管理端场景**：`GET/PUT/DELETE .../metadata/scenes/{id}`；改 **`raw_text`** 会删该场景旧 **TextChunk**、**Chroma** `tc_*` 向量，再 **切块 + 嵌入**；删场景会 **重排 `scene_number`**。入库中 **`ingesting`** 仍 **409**（`_get_story_and_active_version`）。
 
+### 2026-03-23 | 流式叙事与 `get_db` 事务
+
+**问题**：`POST /messages` 若沿用依赖注入的 `get_db`，流式响应耗时期间会话可能长期不提交或与普通请求事务语义冲突。  
+**规则**：**长连接 SSE** 使用 **`async with async_session_factory() as db`** 在路由/generator 内自管会话与 `commit`/`rollback`；引擎内完成写库后再 `yield` 尾部事件。
+
+### 2026-03-23 | 叙事 `soften_content` 与 SSE 已发 token 不可混用
+
+**问题**：流式回合若先把未软化的叙事 `token` 推给前端，再在落库前调用 `soften_content` 改写正文，会导致 **界面展示与数据库/历史不一致**。  
+**规则**：**首版**仅对 **非流式开场**（`generate_opening`）在落库前可选软化（`NARRATIVE_SAFETY_SOFTEN`）。流式 `process_turn_sse` 不事后软化；完整「缓冲叙事段再 emit」留后续迭代。内容策略 **拦截** 时流式路径 **rollback** 本轮（含 user 消息）+ SSE `error`，与开场 **落库降级文案** 策略区分清楚。
+
+### 2026-03-22 | Alembic 版本链与本地 `app.db` 不一致
+
+**问题**：`alembic upgrade head` 报 `Can't locate revision identified by '…'`。  
+**根因**：本机 SQLite 中 `alembic_version` 指向的 revision 在仓库 `alembic/versions/` 中不存在（或从其它分支/拷贝来的库）。  
+**规则**：以仓库迁移链为准；新环境用空库 `upgrade head`，或 `alembic stamp <已知 head>` 再逐步升级；勿手工改表结构却不生成 revision。Phase 4 会话表迁移：`d4e5f6a7b8c9` 接在 `b7c4e2d1a9f0` 之后。
+
 ### 2026-03-21 | RAG 检索：Chroma `n_results`、BM25 缓存、加权 RRF
 
 **Chroma**：`collection.query` 的 `n_results` 须 **≥1**；传 0 会报错或行为异常；与 `top_k` 组合时用 `max(1, top_k)`。
