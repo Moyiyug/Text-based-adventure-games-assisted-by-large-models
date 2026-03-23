@@ -62,7 +62,8 @@ export function TopNav() {
               to="/stories"
               className={cn(
                 "flex items-center text-sm font-ui transition-colors duration-150 hover:text-text-primary",
-                location.pathname.startsWith("/stories")
+                location.pathname.startsWith("/stories") ||
+                  location.pathname.startsWith("/sessions")
                   ? "text-text-primary border-b-2 border-accent-primary pb-1"
                   : "text-text-secondary"
               )}

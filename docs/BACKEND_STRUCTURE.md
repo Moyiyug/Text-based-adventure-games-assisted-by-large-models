@@ -676,6 +676,12 @@ def retrieve_variant_c(query: str, story_version_id: int, config: dict):
 - **分隔符前**：纯叙事文本，可直接流式逐 token 发送给前端。
 - **分隔符后**：单行 JSON 元数据，不发送给前端，由服务端缓冲解析。
 - 提示词中需明确指示模型遵守此格式，禁止在叙事文本中出现分隔符字符串。
+- **解析容错（仍以上述为规范）**：`meta_parse` 可识别泄漏形态 `**META---` / `META---`（其后须出现 JSON）、**文末**单独一行 `---` 或 `-----+` 后接可解析且「像 META」的 JSON 对象（须含 `choices` / `options` / `state_update` 或扁平 state 键之一）、META 段外层的 \`\`\`json 围栏、以及从噪声中提取首个平衡花括号 JSON 对象；`MetaStreamSplitter` 在 JSON 未闭合前用 `_hr_json_withhold_start` 减少把 `{` 推给前端；`finalize` 在无 marker 时整缓冲再走 `parse_complete_model_output` 以兜住 HR+JSON。若仍无结构化 `choices`，对叙事**尾部约 60 行（约 4000 字上限）**的编号列表做保守兜底，支持 `1.` / `1、` / `1）` / `（1）` 等形态（2–4 条，优先文末连续块）。若仍为空且环境变量 `NARRATIVE_CHOICES_LLM_FALLBACK=true`，服务端再调用一次 DeepSeek 从叙事节选生成 2–4 条行动（`app/services/narrative/choice_fallback.py`）。落库 `session_messages.metadata` 中增加 `choices_source`：`model_json` / `narrative_regex` / `llm_fallback` / `none`，便于排障。
+- **双阶段生成（可选）**：`NARRATIVE_TWO_PHASE_ENABLED=true` 时第一轮只流式叙事（`prompts.TWO_PHASE_ROUND_ONE_SUFFIX`），第二轮 `build_two_phase_meta_prompt` + `deepseek_chat` 非流式专出 META JSON；与 `NARRATIVE_SPLIT_CHOICES_LLM` 同时开启时**以双阶段为准**（engine 内对 split 第一轮关闭）。SSE 事件类型与顺序不变，回合墙钟与 token 成本上升。
+- **推进与衔接（不向玩家展示）**：可选 META 键 `choice_beats`（与 `choices` 等长）落库于 `metadata`，供**下一回合**在 `build_generation_prompt` 前经 `turn_context.build_turn_hints_text` 注入「选中项隐含推进」类提示；玩家气泡仍仅展示叙事正文。`NARRATIVE_TURN_HINTS_ENABLED` / `NARRATIVE_STALL_BREAK_*` 控制回合提示与相邻 GM 相似度僵局提示；`NARRATIVE_INPUT_BRIDGE=true` 时多一次 DeepSeek 生成「叙事承接用」短句，**仅写入 prompt**，`session_messages` 中 user 行仍为玩家原文；`NARRATIVE_STRICT_CHOICE_REFINE=true` 且 `mode=strict` 时主流结束后再调用 `choice_refine.refine_strict_choices`，成功则 `metadata.choices_refined=true`。
+- **前置假 META 卫生处理**：若模型在**首个**规范分隔符之前输出「【META JSON】」、单独一行 `` ```json `` 等，流式切分仍会把该段算进叙事；`strip_leaking_meta_suffix` 在截断重复 `---META---` 之后会调用 `strip_pre_marker_meta_leak` 剥掉上述尾部，再 `strip_incomplete_separator_tail`；前端 `stripMetaSuffixForDisplay` 与之同构，避免玩家气泡泄漏。
+- **Markdown 伪字段尾段**：若叙事尾出现单独一行 `---` 后紧跟 `**choices:**` / `**choice_beats:**` 等（仍在 `---META---` 之前），由 `strip_pseudo_markdown_meta_tail` 截断（与近距 `---` 联动，窗口 12 行）；在 `strip_pre_marker_meta_leak` 之后执行；前端 `stripPseudoMarkdownMetaTail` 同构。
+- **篇幅软提示**：`NARRATIVE_CONCISE_MODE=true`（默认）时在 `build_generation_prompt` 的 system 末尾追加一句略短叙事/选项建议，**非**硬截断；与 `seed_prompt_templates` 的 META_BLOCK 第 8 条互补。
 
 #### 4.4.2 服务端流式处理流程
 
@@ -709,6 +715,12 @@ DeepSeek stream=true 逐 token 返回
 - **JSON 解析失败**：叙事文本已发送给用户（不可撤回），choices 和 state_update 置空，本轮不更新状态，记录错误日志，向前端发送 `type=error` 提示"状态更新失败，不影响继续游玩"。
 - **未检测到分隔符**：整段输出视为纯叙事文本，choices 和 state_update 置空，同上处理。
 - **DeepSeek 风控拦截**：触发 `safety.py` 柔化重试流程。
+
+#### 4.4.4 提示词同步与原始输出采样
+
+- 仓库内 `scripts/seed_prompt_templates.py` 中的 `META_BLOCK` 与系统模板变更后，应在目标环境执行该脚本（或经管理端 `/api/admin/prompts` 等价更新），否则 DB 中仍可能是旧版提示，模型易偏离 `\n---META---\n` + JSON 协议。
+- 本地调试可运行 `scripts/sample_narrative_meta_output.py`（`PYTHONPATH=.`、`--session-id` 或 `--fixture-user-prompt`），将模型完整原始输出写入 `logs/meta_samples/`（勿提交）；用于对照调整 `meta_parse` 或提示词。
+- 流式/开场在 **`choices` 为空或存在 `parse_error`** 时，服务端会打 `narrative_meta_parse_issue` 警告日志并附带输出尾部截断，便于区分「未到 META」「JSON 截断」等；若已走 LLM 二次抽取仍为空，检查 `choice_fallback` 日志与 `DEEPSEEK_API_KEY`。
 
 ---
 

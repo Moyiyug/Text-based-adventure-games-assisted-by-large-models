@@ -34,6 +34,11 @@
   --font-stack-ui: "Inter", "Noto Sans SC", "Microsoft YaHei", sans-serif;
   --font-stack-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
 
+  /* 游玩页滚动条（play-session-messages-scroll），复用语义色 */
+  --scrollbar-track: var(--bg-primary);
+  --scrollbar-thumb: var(--border);
+  --scrollbar-thumb-hover: var(--bg-hover);
+
   font-family: var(--font-stack-ui);
   color: var(--text-primary);
   background-color: var(--bg-primary);
@@ -57,8 +62,36 @@ body.admin-route {
   --player-text: #1a1a2e;
   --system-text: #6b7280;
 
+  --scrollbar-track: var(--bg-hover);
+  --scrollbar-thumb: var(--border);
+  --scrollbar-thumb-hover: var(--text-secondary);
+
   color: var(--text-primary);
   background-color: var(--bg-primary);
+}
+
+/* 游玩页对话列表：暗色/浅色随 :root 或 admin-route 变量切换 */
+.play-session-messages-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.play-session-messages-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.play-session-messages-scroll::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 4px;
+}
+
+.play-session-messages-scroll::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+.play-session-messages-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
 }
 
 @theme {

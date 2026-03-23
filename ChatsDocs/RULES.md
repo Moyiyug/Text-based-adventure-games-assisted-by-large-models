@@ -93,6 +93,7 @@
 4. **公共组件按需创建**：不集中一次性构建，首次使用时创建，后续复用
 5. **环境变量**：所有密钥放 `.env`，通过 `pydantic-settings` 读取，绝不硬编码
 6. **数据库迁移**：任何 model 变更必须通过 `alembic revision --autogenerate` 生成迁移
+7. **游玩页叙事与协议段**：主气泡对 `player` / `admin` 使用**同一套**面向玩家的展示（剥离 `---META---` 等协议尾段，见 `docs/APP_FLOW.md` §3.5.2）。**不得**默认把原始 META JSON 当作正文给玩家。管理员若需核对协议与结构化字段：游玩页 **每条已落库**的 GM 气泡（`id>0`、非流式）均有 **「协议原文（调试）」**折叠（仅 `role=admin`），内可展示落库正文与 **`metadata` JSON**（如 `choices` / `parse_error`）；亦可使用管理端会话记录（如 `/admin/sessions` 与 transcript）。
 
 ---
 
@@ -116,3 +117,25 @@
 - 每个有效功能完成后：提交 Git → 更新 `progress.txt`
 - 踩坑后更新 `lessons.md`
 - 卡住超过 3 轮切 Debug mode
+
+---
+
+## 8. Git 与远端仓库（避免误推）
+
+### 8.1 本项目的 GitHub 地址（唯一主仓库）
+
+**RAG 叙事平台对外主仓库：**
+
+**<https://github.com/Moyiyug/Text-based-adventure-games-assisted-by-large-models>**
+
+- 执行 `git push` 前**必须**先 `git remote -v`，确认 **`origin`** 指向上述仓库（勿默认假设为其它 repo）。
+- 若工作区是 **monorepo**（例如 `Python_Project/` 下用 **`RAG/`** 子目录放本项目），而 GitHub 仓库根目录直接是 `backend/`、`frontend/`，则**不能**把整仓 `main` 直接当成「RAG 仓库」推送；需按约定用 **`git subtree split --prefix=RAG`** 等方式同步，**禁止**在未说明后果的情况下对主仓库 `main` **`--force`**（会覆盖远端历史）。细节与踩坑见 `lessons.md`。
+
+### 8.2 简短提交规范
+
+| 约定 | 说明 |
+|------|------|
+| **提交信息** | 推荐前缀：`feat`（新功能）、`fix`（修复）、`docs`（文档）、`chore`（配置/杂项）；中英文均可，一行说清「做了什么」。 |
+| **禁止入库** | `.env`、`data/`、数据库文件、API Key、大体积二进制；以 `RAG/.gitignore` 为准。 |
+| **提交范围** | `git status` 确认只包含预期路径；多项目 monorepo 时明确本次是否只提交 `RAG/`。 |
+| **推送前** | 再次核对 `origin` URL；需要合并远端时优先 `pull --rebase` / `merge`，避免误用 force。 |

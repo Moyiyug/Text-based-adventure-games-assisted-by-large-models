@@ -436,6 +436,9 @@ GM 气泡：
 
 - 对话区域占满剩余高度，溢出时滚动，新消息自动滚到底部。
 - 状态面板折叠时对话区域占满宽度。
+- **整页定高**：`PlaySessionPage` 主壳使用 `h-[calc(100vh-3.5rem)]` + `overflow-hidden`，中间主卡片 `flex-1 min-h-0`；仅**对话列表列** `overflow-y-auto`，选项区/输入区 `shrink-0`。避免浏览器整页滚动导致右侧状态面板被滚出视口。
+- **滚动条语义色**：对话列表容器加类名 `play-session-messages-scroll`，在 `globals.css` 内用 `--scrollbar-track` / `--scrollbar-thumb` / `--scrollbar-thumb-hover`（继承 `:root` 暗色或 `body.admin-route` 浅色下的 `--bg-primary`、`--border`、`--bg-hover` 等），避免系统默认亮白滚动条破坏沉浸感。
+- **GM 气泡与选项去重**：`stripMetaSuffixForDisplay` 支持 `stripNumberedTail`；`ChatBubble` 仅在「非流式 + `messageId>0` + `coerceChoicesFromMetadata(metadata).length >= 2`」时去掉文末编号块。GM 旁白正文不再整段套用 `formatPlainChoiceLabel`（仅玩家气泡与 `ChoicePanel` 按钮文案做加粗剥离）。细节与产品语义见 `APP_FLOW.md` §3.5.2。
 
 ### 7.3 Auth 页面布局（登录/注册）
 

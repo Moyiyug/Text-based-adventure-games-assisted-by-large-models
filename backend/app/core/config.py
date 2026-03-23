@@ -45,6 +45,32 @@ class Settings(BaseSettings):
     # 为 True 时：开场在落库前对叙事正文额外调用一次 DeepSeek 做软化（流式回合暂不软化，避免与已推送 token 不一致）。
     NARRATIVE_SAFETY_SOFTEN: bool = False
 
+    # --- Choices LLM fallback ---
+    # 当 META JSON 与正文编号兜底均未得到选项时，再调用一次 DeepSeek 生成 2～4 条行动（仅服务端，不改变 SSE 协议）。
+    NARRATIVE_CHOICES_LLM_FALLBACK: bool = True
+    NARRATIVE_CHOICES_LLM_MAX_INPUT_CHARS: int = 3500
+
+    # --- Narrative progression / turn hints（不向玩家展示，仅注入 prompt）---
+    NARRATIVE_TURN_HINTS_ENABLED: bool = True
+    NARRATIVE_STALL_BREAK_ENABLED: bool = True
+    # 相邻两轮 GM 词 Jaccard 大于等于该值时追加「僵局打破」提示。
+    NARRATIVE_STALL_SIMILARITY_THRESHOLD: float = 0.55
+
+    # 为 True 时：落库 user 原文不变，仅在生成用 messages 中追加「叙事承接用」桥接句（多一次 DeepSeek）。
+    NARRATIVE_INPUT_BRIDGE: bool = False
+
+    # 为 True 且 session.mode=strict 时：主流结束后对最终 choices/choice_beats 再调一次 DeepSeek 精炼。
+    NARRATIVE_STRICT_CHOICE_REFINE: bool = False
+
+    # 为 True 时：主流/开场第一轮只产出叙事+state 的 META，选项由第二次 DeepSeek 调用生成（与第一轮同检索证据块，见 choice_synthesis_rag）。
+    NARRATIVE_SPLIT_CHOICES_LLM: bool = False
+
+    # 为 True 时：第一轮只流式叙事（无 META），第二轮非流式专出 ---META--- + JSON（与 SPLIT_CHOICES 二选一：本开关优先，另一自动关闭语义见 engine 注释）。
+    NARRATIVE_TWO_PHASE_ENABLED: bool = False
+
+    # 为 True 时：在生成用 system 消息末尾追加一句「略短叙事」软提示（非硬截断，见 prompts.build_generation_prompt）。
+    NARRATIVE_CONCISE_MODE: bool = True
+
     # --- App ---
     APP_ENV: str = "development"
     APP_DEBUG: bool = True

@@ -16,7 +16,15 @@ from app.core.config import settings
 from app.models.session import Session as NarrativeSession
 from app.models.session import SessionEvent, SessionMessage, SessionState
 from app.services.llm.deepseek import deepseek_chat, deepseek_chat_stream
-from app.services.narrative.meta_parse import MetaStreamSplitter, parse_complete_model_output
+from app.services.narrative.choice_fallback import synthesize_choices_from_context
+from app.services.narrative.choice_refine import refine_strict_choices
+from app.services.narrative.meta_parse import (
+    MetaStreamSplitter,
+    ParsedTurnOutput,
+    extract_choice_lines_from_narrative,
+    parse_complete_model_output,
+    strip_leaking_meta_suffix,
+)
 from app.services.narrative.safety import (
     handle_api_block,
     is_likely_content_policy_block,
@@ -24,8 +32,10 @@ from app.services.narrative.safety import (
 )
 from app.services.narrative.prompts import (
     build_generation_prompt,
+    build_two_phase_meta_prompt,
     load_prompt_templates,
 )
+from app.services.narrative.turn_context import build_turn_hints_text
 from app.services.narrative.state import apply_state_update, validate_state_update
 from app.services.profile_loader import (
     load_session_profile_bundle,
@@ -37,12 +47,84 @@ from app.services.rag.dispatcher import dispatch_retrieve
 logger = logging.getLogger(__name__)
 
 _HISTORY_LIMIT = 24
+_META_LOG_TAIL = 400
+
+
+def _log_meta_parse_issue(
+    *,
+    phase: str,
+    session_id: int,
+    turn_number: int,
+    choices: list[str],
+    parse_error: str | None,
+    raw_tail_source: str,
+) -> None:
+    if choices and not parse_error:
+        return
+    tail = raw_tail_source[-_META_LOG_TAIL:] if len(raw_tail_source) > _META_LOG_TAIL else raw_tail_source
+    logger.warning(
+        "narrative_meta_parse_issue phase=%s session_id=%s turn=%s choices_len=%s parse_error=%r raw_tail=%r",
+        phase,
+        session_id,
+        turn_number,
+        len(choices),
+        parse_error,
+        tail,
+    )
 _TOKEN_BUDGET = 6000
 
 OPENING_USER_PROMPT = (
     "请根据玩家的冒险目标，生成本会话的**开场**交互叙事，并给出首批选项。"
     "严格遵守系统提示中的输出格式（叙事后接 ---META--- 再单行 JSON）。"
+    "开场须尊重原作**时间线**：从检索证据所暗示的、玩家可介入的**较早合理锚点**切入，避免一跳到后期剧透或终盘场景；"
+    "若证据含多段，优先选**时序靠前**且能建立场景与目标的片段来组织开场。"
 )
+
+OPENING_TURN_HINTS = (
+    "[开场回合]\n本段为会话首次叙事：建立场景、张力与可点选项；无需承接上一轮 GM。\n"
+    "首段应用一两句点明当前在作品时间轴中的位置（如章节/时期/关键事件前后关系），勿用终局或重大剧透后的台词作无铺垫开场锚点。"
+)
+
+
+async def _last_n_assistant_messages(
+    db: AsyncSession, session_id: int, n: int
+) -> list[SessionMessage]:
+    res = await db.execute(
+        select(SessionMessage)
+        .where(
+            SessionMessage.session_id == session_id,
+            SessionMessage.role == "assistant",
+        )
+        .order_by(SessionMessage.id.desc())
+        .limit(n)
+    )
+    rows = list(res.scalars().all())
+    return list(reversed(rows))
+
+
+async def _maybe_refine_strict_choices(
+    *,
+    mode: str,
+    narrative: str,
+    prev_state: dict[str, Any],
+    context: str,
+    choices: list[str],
+    beats: list[str] | None,
+) -> tuple[list[str], list[str] | None, bool]:
+    if mode != "strict" or not settings.NARRATIVE_STRICT_CHOICE_REFINE:
+        return choices, beats, False
+    if len(choices) < 2:
+        return choices, beats, False
+    refined = await refine_strict_choices(
+        narrative_excerpt=narrative,
+        state_json=json.dumps(prev_state or {}, ensure_ascii=False),
+        evidence_excerpt=context,
+        current_choices=choices,
+        current_beats=beats,
+    )
+    if not refined:
+        return choices, beats, False
+    return refined["choices"], refined["choice_beats"], True
 
 
 @dataclass
@@ -105,6 +187,8 @@ async def generate_opening(
         profile=profile_bundle,
     )
     state = await _latest_state_dict(db, session.id)
+    opening_hints = OPENING_TURN_HINTS if settings.NARRATIVE_TURN_HINTS_ENABLED else None
+    opening_two_phase = settings.NARRATIVE_TWO_PHASE_ENABLED
     messages = build_generation_prompt(
         OPENING_USER_PROMPT,
         context,
@@ -114,15 +198,22 @@ async def generate_opening(
         style_config=dict(session.style_config or {}),
         templates=templates,
         history=[],
+        turn_hints=opening_hints,
+        narrative_concise_mode=settings.NARRATIVE_CONCISE_MODE,
+        narrative_two_phase_round_one=opening_two_phase,
     )
     narrative_body: str
     choices_body: list[str]
     state_update_body: dict[str, Any]
     internal_notes_body: str
     parse_error_body: str | None
+    choices_source_val: str | None = None
+    choice_beats_body: list[str] | None = None
+    choices_refined_flag = False
 
+    opening_raw_full: str | None = None
     try:
-        raw = await deepseek_chat(messages, temperature=0.4)
+        opening_raw_full = await deepseek_chat(messages, temperature=0.4)
     except Exception as e:
         if not is_likely_content_policy_block(e):
             raise
@@ -134,12 +225,41 @@ async def generate_opening(
         internal_notes_body = ""
         parse_error_body = "api_content_policy"
     else:
-        parsed = parse_complete_model_output(raw)
-        narrative_body = parsed.narrative
-        choices_body = parsed.choices
-        state_update_body = parsed.state_update
-        internal_notes_body = parsed.internal_notes
-        parse_error_body = parsed.parse_error
+        if opening_two_phase:
+            p1 = parse_complete_model_output(opening_raw_full or "")
+            narrative_body = strip_leaking_meta_suffix(p1.narrative)
+            messages2 = build_two_phase_meta_prompt(
+                context=context,
+                state=state,
+                narrative=narrative_body,
+                user_input=session.opening_goal or OPENING_USER_PROMPT,
+                mode=session.mode,
+                style_config=dict(session.style_config or {}),
+                templates=templates,
+            )
+            raw2 = ""
+            try:
+                raw2 = await deepseek_chat(messages2, temperature=0.35)
+            except Exception as e2:  # noqa: BLE001
+                logger.warning("opening two_phase round2 failed: %s", e2)
+            p2 = parse_complete_model_output(raw2 or "")
+            choices_body = list(p2.choices)
+            state_update_body = p2.state_update
+            internal_notes_body = p2.internal_notes
+            parse_error_body = p2.parse_error
+            choices_source_val = p2.choices_source or (
+                "model_json" if choices_body else None
+            )
+            choice_beats_body = p2.choice_beats
+        else:
+            parsed = parse_complete_model_output(opening_raw_full or "")
+            narrative_body = parsed.narrative
+            choices_body = parsed.choices
+            state_update_body = parsed.state_update
+            internal_notes_body = parsed.internal_notes
+            parse_error_body = parsed.parse_error
+            choices_source_val = parsed.choices_source
+            choice_beats_body = parsed.choice_beats
         if internal_notes_body:
             logger.info("opening internal_notes: %s", internal_notes_body[:500])
         if (
@@ -154,24 +274,71 @@ async def generate_opening(
                     "soften_content failed session_id=%s: %s", session.id, soften_exc
                 )
 
+    narrative_body = strip_leaking_meta_suffix(narrative_body)
+    if not choices_body:
+        choices_body = extract_choice_lines_from_narrative(narrative_body)
+        if choices_body:
+            choices_source_val = "narrative_regex"
+    if (
+        not choices_body
+        and settings.NARRATIVE_CHOICES_LLM_FALLBACK
+        and narrative_body.strip()
+    ):
+        try:
+            syn = await synthesize_choices_from_context(
+                user_input="（故事开场，尚无玩家上一句行动。）",
+                narrative=narrative_body,
+            )
+        except Exception as fb_exc:  # noqa: BLE001
+            logger.warning("opening choices LLM fallback error: %s", fb_exc)
+            syn = []
+        if syn:
+            choices_body = syn
+            choices_source_val = "llm_fallback"
+            choice_beats_body = None
+
+    choices_body, choice_beats_body, choices_refined_flag = await _maybe_refine_strict_choices(
+        mode=session.mode,
+        narrative=narrative_body,
+        prev_state=state,
+        context=context,
+        choices=choices_body,
+        beats=choice_beats_body,
+    )
+
     new_turn = max(1, session.turn_count + 1)
+
+    _log_meta_parse_issue(
+        phase="opening",
+        session_id=session.id,
+        turn_number=new_turn,
+        choices=choices_body,
+        parse_error=parse_error_body,
+        raw_tail_source=opening_raw_full if opening_raw_full is not None else narrative_body,
+    )
 
     su_in = state_update_body if not parse_error_body else {}
     validated = validate_state_update(state, su_in)
     await apply_state_update(db, session.id, new_turn, validated)
 
+    opening_meta: dict[str, Any] = {
+        "opening": True,
+        "choices": choices_body,
+        "choices_source": choices_source_val or "none",
+        "parse_error": parse_error_body,
+        "profile_context_used": profile_used,
+    }
+    if choice_beats_body:
+        opening_meta["choice_beats"] = choice_beats_body
+    if choices_refined_flag:
+        opening_meta["choices_refined"] = True
     db.add(
         SessionMessage(
             session_id=session.id,
             turn_number=new_turn,
             role="assistant",
             content=narrative_body,
-            metadata_={
-                "opening": True,
-                "choices": choices_body,
-                "parse_error": parse_error_body,
-                "profile_context_used": profile_used,
-            },
+            metadata_=opening_meta,
         )
     )
     db.add(
@@ -249,8 +416,44 @@ async def process_turn_sse(
             token_budget=_TOKEN_BUDGET,
             profile=profile_bundle,
         )
+        assistants = await _last_n_assistant_messages(db, session.id, 2)
+        prev_gm: str | None = None
+        prev_prev_gm: str | None = None
+        prev_meta: dict[str, Any] = {}
+        if assistants:
+            prev_gm = assistants[-1].content
+            raw_meta = assistants[-1].metadata_
+            if isinstance(raw_meta, dict):
+                prev_meta = raw_meta
+            if len(assistants) >= 2:
+                prev_prev_gm = assistants[-2].content
+        turn_hints = build_turn_hints_text(
+            mode=session.mode,
+            state=state,
+            prev_gm_content=prev_gm,
+            prev_meta=prev_meta,
+            user_text=text,
+            prev_prev_gm_content=prev_prev_gm,
+        )
+        prompt_user = text
+        if settings.NARRATIVE_INPUT_BRIDGE:
+            from app.services.narrative.input_bridge import rationalize_player_turn
+
+            bridge = await rationalize_player_turn(
+                user_text=text,
+                state_summary=json.dumps(state or {}, ensure_ascii=False),
+                mode=session.mode,
+            )
+            if bridge:
+                prompt_user = f"{text}\n（叙事承接用·系统整理）\n{bridge}"
+        # NARRATIVE_TWO_PHASE_ENABLED 时优先于 NARRATIVE_SPLIT_CHOICES_LLM（第一轮不产出可解析 META）
+        split_choices_phase_one = (
+            settings.NARRATIVE_SPLIT_CHOICES_LLM
+            and not settings.NARRATIVE_TWO_PHASE_ENABLED
+            and session.mode in ("strict", "creative")
+        )
         messages = build_generation_prompt(
-            text,
+            prompt_user,
             context,
             state,
             None,
@@ -258,6 +461,10 @@ async def process_turn_sse(
             style_config=dict(session.style_config or {}),
             templates=templates,
             history=history_for_prompt,
+            turn_hints=turn_hints,
+            narrative_concise_mode=settings.NARRATIVE_CONCISE_MODE,
+            narrative_split_choices_phase_one=split_choices_phase_one,
+            narrative_two_phase_round_one=settings.NARRATIVE_TWO_PHASE_ENABLED,
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("process_turn 准备阶段失败 session_id=%s", session.id)
@@ -290,28 +497,115 @@ async def process_turn_sse(
         await db.rollback()
         return
 
-    parsed = splitter.finalize()
+    parsed_stream = splitter.finalize()
+    narrative_for_db = strip_leaking_meta_suffix(parsed_stream.narrative)
+
+    if settings.NARRATIVE_TWO_PHASE_ENABLED:
+        try:
+            messages2 = build_two_phase_meta_prompt(
+                context=context,
+                state=state,
+                narrative=narrative_for_db,
+                user_input=text,
+                mode=session.mode,
+                style_config=dict(session.style_config or {}),
+                templates=templates,
+            )
+            raw2 = await deepseek_chat(messages2, temperature=0.25)
+        except Exception as e2:  # noqa: BLE001
+            logger.warning("turn two_phase round2 failed: %s", e2)
+            raw2 = ""
+        p2 = parse_complete_model_output(raw2 or "")
+        parsed = ParsedTurnOutput(
+            narrative=narrative_for_db,
+            choices=list(p2.choices),
+            state_update=p2.state_update,
+            internal_notes=p2.internal_notes,
+            parse_error=p2.parse_error,
+            choices_source=p2.choices_source or ("model_json" if p2.choices else None),
+            choice_beats=p2.choice_beats,
+        )
+    else:
+        parsed = ParsedTurnOutput(
+            narrative=narrative_for_db,
+            choices=list(parsed_stream.choices),
+            state_update=parsed_stream.state_update,
+            internal_notes=parsed_stream.internal_notes,
+            parse_error=parsed_stream.parse_error,
+            choices_source=parsed_stream.choices_source,
+            choice_beats=parsed_stream.choice_beats,
+        )
+
     if parsed.internal_notes:
         logger.info("turn internal_notes: %s", parsed.internal_notes[:500])
 
-    choices = parsed.choices if not parsed.parse_error else []
+    _log_meta_parse_issue(
+        phase="turn_stream",
+        session_id=session.id,
+        turn_number=current_turn,
+        choices=parsed.choices,
+        parse_error=parsed.parse_error,
+        raw_tail_source=splitter.accumulated_raw(),
+    )
+
+    choices = list(parsed.choices)
+    choices_source_val = parsed.choices_source
+    if not choices:
+        choices = extract_choice_lines_from_narrative(narrative_for_db)
+        if choices:
+            choices_source_val = "narrative_regex"
+    if (
+        not choices
+        and settings.NARRATIVE_CHOICES_LLM_FALLBACK
+        and narrative_for_db.strip()
+    ):
+        try:
+            syn = await synthesize_choices_from_context(
+                user_input=text,
+                narrative=narrative_for_db,
+            )
+        except Exception as fb_exc:  # noqa: BLE001
+            logger.warning("turn choices LLM fallback error: %s", fb_exc)
+            syn = []
+        if syn:
+            choices = syn
+            choices_source_val = "llm_fallback"
+
+    choice_beats_val: list[str] | None = parsed.choice_beats
+    if choices_source_val in ("narrative_regex", "llm_fallback"):
+        choice_beats_val = None
+
+    choices, choice_beats_val, choices_refined_flag = await _maybe_refine_strict_choices(
+        mode=session.mode,
+        narrative=narrative_for_db,
+        prev_state=state,
+        context=context,
+        choices=choices,
+        beats=choice_beats_val,
+    )
     su = parsed.state_update if not parsed.parse_error else {}
     validated = validate_state_update(state, su)
 
     try:
         await apply_state_update(db, session.id, current_turn, validated)
+        turn_meta: dict[str, Any] = {
+            "choices": choices,
+            "choices_source": choices_source_val or "none",
+            "parse_error": parsed.parse_error,
+            "rag_variant": retrieved.variant_type if retrieved else None,
+            "profile_context_used": profile_used,
+        }
+        if choice_beats_val:
+            turn_meta["choice_beats"] = choice_beats_val
+        if choices_refined_flag:
+            turn_meta["choices_refined"] = True
         db.add(
             SessionMessage(
                 session_id=session.id,
                 turn_number=current_turn,
                 role="assistant",
-                content=parsed.narrative,
-                metadata_={
-                    "choices": choices,
-                    "parse_error": parsed.parse_error,
-                    "rag_variant": retrieved.variant_type if retrieved else None,
-                    "profile_context_used": profile_used,
-                },
+                content=narrative_for_db,
+                metadata_=turn_meta,
             )
         )
         db.add(

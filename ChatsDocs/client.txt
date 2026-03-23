@@ -3,3 +3,9 @@ uvicorn app.main:app --reload --port 8000
 
 cd /d d:\MyProject\Python_Project\RAG\frontend
 npm run dev
+
+--- 手工验收（流式选项遮罩 + 开场）---
+- 游玩页发起新回合流式输出：GM 气泡内肉眼应不再长时间出现完整 `**choices:**` + 多行 `-` 列表（或仅极短闪烁）；`done`+`choices` 后与历史/hydrate 一致。
+- 流式末尾若模型误吐 `---` 再接伪字段前缀，正文应在 in-flight 阶段被截断，不剧透 choice_beats 大纲。
+- 开场若干次：叙事应尽量从检索材料暗示的较早、可介入场景切入（非硬保证；偏差大时查检索与元数据）。
+- 回归：`RAG/frontend` 下 `npm run test`、`npm run build`。

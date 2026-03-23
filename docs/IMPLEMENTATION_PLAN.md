@@ -427,32 +427,32 @@
 
 ### 4.9 故事库 + 新会话页面（Day 22）
 
-- [ ] `StoryCard.tsx`：故事卡片（封面占位、标题、简介截断、入库状态标签）。参照 FRONTEND_GUIDELINES.md §6.7。
-- [ ] `StoryLibraryPage.tsx`：作品卡片网格列表，调用 `GET /api/stories`。
-- [ ] `NewSessionPage.tsx`：模式选择（严谨/创作单选）+ 冒险目标输入 + 「开始冒险」按钮。调用 `POST /api/sessions`。
-- [ ] 创建 `Textarea.tsx` 基础组件（首次使用）。
+- [x] `StoryCard.tsx`：故事卡片（封面占位、标题、简介截断、入库状态标签）。参照 FRONTEND_GUIDELINES.md §6.7。
+- [x] `StoryLibraryPage.tsx`：作品卡片网格列表，调用 `GET /api/stories`。
+- [x] `NewSessionPage.tsx`：模式选择（严谨/创作单选）+ 冒险目标输入 + 「开始冒险」按钮。调用 `POST /api/sessions`。
+- [x] 创建 `Textarea.tsx` 基础组件（首次使用）。
 - [ ] 验证：浏览故事库 → 选择作品 → 配置新会话 → 点击开始 → 跳转到游玩页。
 
 ### 4.10 游玩页核心组件（Day 22-23）
 
-- [ ] `PlaySessionPage.tsx`：核心游玩界面布局（参照 FRONTEND_GUIDELINES.md §7.2）。
-- [ ] `ChatBubble.tsx`：GM 气泡（左对齐，金色色条）+ 玩家气泡（右对齐）。
-- [ ] `ChoicePanel.tsx`：选项按钮组（2-4 个按钮 + 自由输入切换）。
-- [ ] `StatePanel.tsx`：可折叠状态面板（ChevronLeft 旋转动画，参照 FRONTEND_GUIDELINES.md §6.8）。
-- [ ] `MessageInput.tsx`：输入框 + 发送按钮（流式输出期间禁用）。
-- [ ] `FeedbackDialog.tsx`：反馈弹窗（评分 + 文字反馈）。
+- [x] `PlaySessionPage.tsx`：核心游玩界面布局（参照 FRONTEND_GUIDELINES.md §7.2）。
+- [x] `ChatBubble.tsx`：GM 气泡（左对齐，金色色条）+ 玩家气泡（右对齐）。
+- [x] `ChoicePanel.tsx`：选项按钮组（2-4 个按钮 + 自由输入切换）。
+- [x] `StatePanel.tsx`：可折叠状态面板（ChevronLeft 旋转动画，参照 FRONTEND_GUIDELINES.md §6.8）。
+- [x] `MessageInput.tsx`：输入框 + 发送按钮（流式输出期间禁用）。
+- [x] `FeedbackDialog.tsx`：反馈弹窗（评分 + 文字反馈）。
 - [ ] 验证：PlaySessionPage 能渲染所有子组件，布局符合 FRONTEND_GUIDELINES.md §7.2。
 
 ### 4.11 SSE 流式集成（Day 23-24）
 
-- [ ] 创建 `src/hooks/useSSEStream.ts`：`fetch` + `ReadableStream` 手动解析 SSE 事件行。**不可用 `EventSource`**（后端是 POST + Bearer 鉴权）。
+- [x] 创建 `src/hooks/useSSEStream.ts`：`fetch` + `ReadableStream` 手动解析 SSE 事件行。**不可用 `EventSource`**（后端是 POST + Bearer 鉴权）。
   - 解析 `type=token` → 逐字追加到当前 GM 气泡。
   - 解析 `type=choices` → 渲染选项按钮组。
   - 解析 `type=state_update` → 刷新状态面板（高亮动画）。
   - 解析 `type=error` → Toast 错误提示。
   - 解析 `type=done` → 恢复输入框可用。
-- [ ] 创建 `src/stores/sessionStore.ts`：Zustand store 管理当前会话消息列表 + 状态面板数据 + 流式状态标志。
-- [ ] 集成 FeedbackDialog：对任意 GM 消息点击反馈图标 → 弹窗 → 提交 → Toast 成功。
+- [x] 创建 `src/stores/sessionStore.ts`：Zustand store 管理当前会话消息列表 + 状态面板数据 + 流式状态标志。
+- [x] 集成 FeedbackDialog：对任意 GM 消息点击反馈图标 → 弹窗 → 提交 → Toast 成功。
 - [ ] 验证：**完整游玩 3+ 轮**，确认流式逐字输出 → 选项渲染 → 点击选项 → 下一轮生成 → 状态面板实时刷新 → 反馈提交。此为全项目最关键的集成验证点。
 
 ---

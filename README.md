@@ -71,6 +71,13 @@ RAG/
 └── README.md
 ```
 
+## 开发与多轮 LLM 测试
+
+- **叙事回合真实 LLM soak**（经 HTTP + Bearer，消耗 DeepSeek token；脚本用 httpx 流式读 SSE，符合 RULES §5.1 语义；已 `trust_env=False` 避免系统代理把 localhost 走成 502）：  
+  先启动后端，在 `backend/` 下设置 `SOAK_USERNAME`、`SOAK_PASSWORD`、`SOAK_STORY_ID`（及可选 `SOAK_API_BASE`、`SOAK_ROUNDS`），执行  
+  `python scripts/narrative_llm_roundtrip_soak.py --rounds 20`。详见脚本文件头注释。
+- **双阶段叙事**：`.env` 中 `NARRATIVE_TWO_PHASE_ENABLED=true` 时第一轮只流式正文、第二轮非流式生成 META；与 `NARRATIVE_SPLIT_CHOICES_LLM` 同时开启时以前者为准（见 `docs/BACKEND_STRUCTURE.md` §4.4）。
+
 ## 规范文档
 
 | 文档 | 说明 |

@@ -1,6 +1,7 @@
 """叙事提示词拼装单测（无 DB）。"""
 
 from app.services.narrative.prompts import (
+    NARRATIVE_CONCISE_SYSTEM_SUFFIX,
     build_generation_prompt,
     build_retrieval_prompt,
     build_system_prompt,
@@ -59,3 +60,35 @@ def test_build_generation_prompt_accepts_empty_history() -> None:
         templates=_templates(),
     )
     assert len(msgs) >= 2
+
+
+def test_build_generation_prompt_injects_turn_hints_before_user_input() -> None:
+    msgs = build_generation_prompt(
+        "走",
+        "ctx",
+        {},
+        None,
+        mode="strict",
+        style_config=None,
+        templates=_templates(),
+        turn_hints="[回合推进提示]\n须回应输入。",
+    )
+    tail = msgs[-1]["content"]
+    assert "须回应输入" in tail
+    assert tail.index("须回应输入") < tail.index("走")
+
+
+def test_build_generation_prompt_narrative_concise_suffix() -> None:
+    msgs = build_generation_prompt(
+        "hi",
+        "",
+        {},
+        None,
+        mode="creative",
+        style_config=None,
+        templates=_templates(),
+        narrative_concise_mode=True,
+    )
+    sys0 = msgs[0]["content"]
+    assert NARRATIVE_CONCISE_SYSTEM_SUFFIX in sys0
+    assert "篇幅软约束" in sys0
