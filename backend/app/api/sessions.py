@@ -239,6 +239,31 @@ async def archive_session(
     return _session_detail(sess, latest)
 
 
+@router.post("/{session_id}/resume", response_model=SessionResponse)
+async def resume_session(
+    session_id: int,
+    db: AsyncSession = Depends(get_db),
+    sess: NarrativeSession = Depends(require_session_owner),
+):
+    """将 archived 会话恢复为 active，以便继续 POST .../messages。参见 BACKEND_STRUCTURE §2.4。"""
+    if sess.status == "active":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="会话已是进行中",
+        )
+    if sess.status != "archived":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="仅支持从已归档状态恢复会话",
+        )
+    sess.status = "active"
+    sess.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(sess)
+    latest = await _latest_state_row(db, session_id)
+    return _session_detail(sess, latest)
+
+
 @router.get("/{session_id}/messages", response_model=list[SessionMessageOut])
 async def list_messages(
     session_id: int,

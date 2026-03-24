@@ -14,6 +14,9 @@ import { AppToaster } from "./components/ui/AppToaster";
 import StoryLibraryPage from "./pages/StoryLibraryPage";
 import NewSessionPage from "./pages/NewSessionPage";
 import PlaySessionPage from "./pages/PlaySessionPage";
+import SessionHistoryPage from "./pages/SessionHistoryPage";
+import SessionReplayPage from "./pages/SessionReplayPage";
+import ProfilePage from "./pages/ProfilePage";
 
 /** 管理端 Radix Portal 挂在 body 下，需让 body 继承浅色语义变量，避免弹层/下拉回到深色令牌 */
 function useAdminBodyClass() {
@@ -43,8 +46,9 @@ function AppRoutes() {
           <Route path="/stories/:storyId/new-session" element={<NewSessionPage />} />
           <Route path="/sessions/:sessionId" element={<PlaySessionPage />} />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/history" element={<div className="p-8">历史 (待实现)</div>} />
-          <Route path="/profile" element={<div className="p-8">画像 (待实现)</div>} />
+          <Route path="/history" element={<SessionHistoryPage />} />
+          <Route path="/history/:sessionId" element={<SessionReplayPage />} />
+          <Route path="/profile" element={<ProfilePage />} />
         </Route>
 
         <Route element={<AdminGuard />}>

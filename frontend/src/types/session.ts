@@ -25,6 +25,20 @@ export interface NarrativeState {
   npc_relations?: Record<string, string>;
 }
 
+/** 与后端 SessionListItem 对齐（GET /api/sessions） */
+export interface SessionListItem {
+  id: number;
+  story_id: number;
+  story_version_id: number;
+  rag_config_id: number;
+  mode: string;
+  status: string;
+  turn_count: number;
+  opening_goal: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 export interface SessionResponse {
   id: number;
   user_id: number;

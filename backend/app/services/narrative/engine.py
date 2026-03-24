@@ -37,6 +37,7 @@ from app.services.narrative.prompts import (
 )
 from app.services.narrative.turn_context import build_turn_hints_text
 from app.services.narrative.state import apply_state_update, validate_state_update
+from app.services.profile import schedule_profile_inference_after_turn
 from app.services.profile_loader import (
     load_session_profile_bundle,
     profile_bundle_nonempty,
@@ -619,6 +620,7 @@ async def process_turn_sse(
         session.turn_count = current_turn
         session.updated_at = datetime.now(timezone.utc)
         await db.commit()
+        schedule_profile_inference_after_turn(session.id, session.turn_count)
     except Exception as e:  # noqa: BLE001
         logger.exception("process_turn 落库失败 session_id=%s", session.id)
         yield _sse_line({"type": "error", "message": f"落库失败: {e}"[:800]})

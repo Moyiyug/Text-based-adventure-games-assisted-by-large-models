@@ -71,6 +71,17 @@ class Settings(BaseSettings):
     # 为 True 时：在生成用 system 消息末尾追加一句「略短叙事」软提示（非硬截断，见 prompts.build_generation_prompt）。
     NARRATIVE_CONCISE_MODE: bool = True
 
+    # --- Profile inference (Phase 5) ---
+    # false 时不调用 DeepSeek 推断画像（开发省成本）。
+    PROFILE_INFERENCE_ENABLED: bool = False
+    # 每 N 轮成功落库后异步触发一次推断（3～5 轮建议 4）。
+    PROFILE_INFERENCE_EVERY_N_TURNS: int = 4
+    # 参与推断的最近消息条数（user+assistant 各算一条）。
+    PROFILE_INFERENCE_HISTORY_MESSAGES: int = 24
+    PROFILE_INFERENCE_TEMPERATURE: float = 0.2
+    # 角色卡 JSON 上传单文件上限（字节）。
+    PROFILE_IMPORT_MAX_BYTES: int = 262144
+
     # --- App ---
     APP_ENV: str = "development"
     APP_DEBUG: bool = True

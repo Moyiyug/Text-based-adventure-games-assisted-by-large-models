@@ -1,6 +1,6 @@
-# === 文档与会话（不纳入版本控制） ===
-# docs/
-# ChatsDocs/
+# === 文档与会话（不纳入版本控制；相对 RAG 根目录） ===
+/docs/
+/ChatsDocs/
 
 # === 运行时数据（TECH_STACK.md §8: data/ 标注 gitignore） ===
 data/

@@ -1,14 +1,16 @@
 import axios from "axios";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import {
+  archiveSession,
   getSession,
   getSessionMessages,
   getSessionState,
   postFeedback,
   postOpening,
+  resumeSession,
 } from "../api/sessionApi";
 import { getStory } from "../api/storyApi";
 import type { NarrativeState } from "../types/session";
@@ -16,9 +18,18 @@ import { streamSessionMessage } from "../hooks/useSSEStream";
 import { useSessionPlayStore } from "../stores/sessionStore";
 import { ChatBubble } from "../components/play/ChatBubble";
 import { ChoicePanel } from "../components/play/ChoicePanel";
+import { ModeBadge } from "../components/play/ModeBadge";
 import { StatePanel } from "../components/play/StatePanel";
 import { MessageInput } from "../components/play/MessageInput";
 import { FeedbackDialog } from "../components/play/FeedbackDialog";
+import { Button } from "../components/ui/Button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogTitle,
+} from "../components/ui/Dialog";
 import { toast, toastApiError } from "../lib/toast";
 
 function normalizeNarrativeState(raw: Record<string, unknown>): NarrativeState {
@@ -34,31 +45,6 @@ function normalizeNarrativeState(raw: Record<string, unknown>): NarrativeState {
         ? (raw.npc_relations as Record<string, string>)
         : {},
   };
-}
-
-function ModeBadge({ mode }: { mode: string }) {
-  const strict = mode === "strict";
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-ui text-xs font-medium"
-      style={
-        strict
-          ? {
-              background: "#1E3A5F",
-              color: "#93C5FD",
-              border: "1px solid #3B82F6",
-            }
-          : {
-              background: "#3B2F1A",
-              color: "#FBBF24",
-              border: "1px solid #D4A853",
-            }
-      }
-    >
-      <span className="h-2 w-2 rounded-full bg-current opacity-80" aria-hidden />
-      {strict ? "严谨模式" : "创作模式"}
-    </span>
-  );
 }
 
 /**
@@ -77,6 +63,7 @@ export default function PlaySessionPage() {
   const [freeInputMode, setFreeInputMode] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackMessageId, setFeedbackMessageId] = useState<number | null>(null);
+  const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
 
   const messages = useSessionPlayStore((s) => s.messages);
   const choices = useSessionPlayStore((s) => s.choices);
@@ -133,17 +120,42 @@ export default function PlaySessionPage() {
     enabled: !!session?.story_id,
   });
 
+  const sessionActive = session?.status === "active";
+  const archived = session?.status === "archived";
+
   const needOpening =
     Number.isFinite(sessionId) &&
+    sessionActive &&
     messagesData !== undefined &&
     !messagesData.some((m) => m.role === "assistant");
 
   const openingQuery = useQuery({
     queryKey: ["sessionOpening", sessionId],
     queryFn: () => postOpening(sessionId),
-    enabled: needOpening,
+    enabled: needOpening && sessionActive,
     retry: 1,
     staleTime: Infinity,
+  });
+
+  const archiveMut = useMutation({
+    mutationFn: () => archiveSession(sessionId),
+    onSuccess: async () => {
+      toast.success("会话已归档");
+      setArchiveDialogOpen(false);
+      await qc.invalidateQueries({ queryKey: ["session", sessionId] });
+      await qc.invalidateQueries({ queryKey: ["mySessions"] });
+    },
+    onError: (e) => toastApiError(e, "归档失败"),
+  });
+
+  const resumeMut = useMutation({
+    mutationFn: () => resumeSession(sessionId),
+    onSuccess: async () => {
+      toast.success("已恢复，可继续冒险");
+      await qc.invalidateQueries({ queryKey: ["session", sessionId] });
+      await qc.invalidateQueries({ queryKey: ["mySessions"] });
+    },
+    onError: (e) => toastApiError(e, "恢复失败"),
   });
 
   useEffect(() => {
@@ -250,7 +262,7 @@ export default function PlaySessionPage() {
 
   const sendUserContent = useCallback(
     async (content: string) => {
-      if (!Number.isFinite(sessionId) || streaming) return;
+      if (!Number.isFinite(sessionId) || streaming || archived) return;
       const trimmed = content.trim();
       if (!trimmed) return;
 
@@ -292,6 +304,7 @@ export default function PlaySessionPage() {
     [
       sessionId,
       streaming,
+      archived,
       addUserMessage,
       beginAssistantStream,
       appendStreamToken,
@@ -335,6 +348,7 @@ export default function PlaySessionPage() {
 
   const displayTitle = storyTitle || story?.title || "加载中…";
   const mode = session?.mode ?? "strict";
+  const inputLocked = streaming || archived;
 
   return (
     <div className="mx-auto flex h-[calc(100vh-3.5rem)] min-w-[1024px] max-w-[1200px] flex-col overflow-hidden px-8 py-6">
@@ -350,6 +364,19 @@ export default function PlaySessionPage() {
           <h1 className="truncate font-story text-xl font-bold text-text-primary">{displayTitle}</h1>
           {session && <ModeBadge mode={mode} />}
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            to="/history"
+            className="rounded-lg px-3 py-1.5 font-ui text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+          >
+            冒险历史
+          </Link>
+          {sessionActive && (
+            <Button size="sm" variant="secondary" onClick={() => setArchiveDialogOpen(true)}>
+              结束冒险
+            </Button>
+          )}
+        </div>
       </header>
 
       {(sessionLoading || (messagesData === undefined && !messagesError)) && (
@@ -361,6 +388,25 @@ export default function PlaySessionPage() {
       {session && messagesData !== undefined && (
         <div className="flex min-h-0 flex-1 gap-0 overflow-hidden rounded-xl border border-border bg-bg-secondary/50 shadow-md">
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {archived && (
+              <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-warning/30 bg-warning/10 px-4 py-2 font-ui text-sm text-text-primary">
+                <span>会话已归档，无法发送新消息。</span>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  isLoading={resumeMut.isPending}
+                  onClick={() => resumeMut.mutate()}
+                >
+                  恢复并继续
+                </Button>
+                <Link
+                  to={`/history/${sessionId}`}
+                  className="text-sm text-accent-primary underline hover:brightness-110"
+                >
+                  查看回看
+                </Link>
+              </div>
+            )}
             {parseError && (
               <div className="shrink-0 border-b border-border bg-danger/10 px-4 py-2 font-ui text-xs text-danger">
                 {parseError}
@@ -385,7 +431,7 @@ export default function PlaySessionPage() {
 
             <ChoicePanel
               choices={choices}
-              disabled={streaming}
+              disabled={inputLocked}
               freeInputMode={freeInputMode}
               onToggleFreeInput={setFreeInputMode}
               onSelectChoice={(text) => void sendUserContent(text)}
@@ -393,7 +439,7 @@ export default function PlaySessionPage() {
 
             {freeInputMode && (
               <MessageInput
-                disabled={false}
+                disabled={archived}
                 streaming={streaming}
                 onSend={(t) => void sendUserContent(t)}
               />
@@ -412,6 +458,27 @@ export default function PlaySessionPage() {
         messageId={feedbackMessageId}
         onSubmit={handleFeedbackSubmit}
       />
+
+      <Dialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>
+        <DialogContent>
+          <DialogTitle>结束冒险</DialogTitle>
+          <DialogDescription>
+            将会话归档为只读。之后可在冒险历史中恢复并继续。
+          </DialogDescription>
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setArchiveDialogOpen(false)}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              isLoading={archiveMut.isPending}
+              onClick={() => archiveMut.mutate()}
+            >
+              确认归档
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

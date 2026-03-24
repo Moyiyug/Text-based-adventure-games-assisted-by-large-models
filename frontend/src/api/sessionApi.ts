@@ -3,10 +3,16 @@ import type {
   FeedbackPayload,
   OpeningGenerationResponse,
   SessionCreatePayload,
+  SessionListItem,
   SessionMessage,
   SessionResponse,
   SessionStateSnapshot,
 } from "../types/session";
+
+export async function listMySessions(): Promise<SessionListItem[]> {
+  const { data } = await apiClient.get<SessionListItem[]>("/api/sessions");
+  return data;
+}
 
 export async function createSession(body: SessionCreatePayload): Promise<SessionResponse> {
   const { data } = await apiClient.post<SessionResponse>("/api/sessions", body);
@@ -38,4 +44,18 @@ export async function postOpening(sessionId: number): Promise<OpeningGenerationR
 export async function postFeedback(sessionId: number, body: FeedbackPayload): Promise<unknown> {
   const { data } = await apiClient.post(`/api/sessions/${sessionId}/feedback`, body);
   return data;
+}
+
+export async function archiveSession(sessionId: number): Promise<SessionResponse> {
+  const { data } = await apiClient.post<SessionResponse>(`/api/sessions/${sessionId}/archive`);
+  return data;
+}
+
+export async function resumeSession(sessionId: number): Promise<SessionResponse> {
+  const { data } = await apiClient.post<SessionResponse>(`/api/sessions/${sessionId}/resume`);
+  return data;
+}
+
+export async function deleteSession(sessionId: number): Promise<void> {
+  await apiClient.delete(`/api/sessions/${sessionId}`);
 }
