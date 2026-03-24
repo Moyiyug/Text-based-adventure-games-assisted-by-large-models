@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     # 角色卡 JSON 上传单文件上限（字节）。
     PROFILE_IMPORT_MAX_BYTES: int = 262144
 
+    # --- Eval (Phase 6) ---
+    EVAL_MAX_CASES_PER_RUN: int = 24
+    EVAL_CONTEXT_TOKEN_BUDGET: int = 6000
+    EVAL_GENERATE_TIMEOUT: float = 120.0
+    EVAL_ANSWER_TIMEOUT: float = 90.0
+    EVAL_JUDGE_TIMEOUT: float = 90.0
+
     # --- App ---
     APP_ENV: str = "development"
     APP_DEBUG: bool = True

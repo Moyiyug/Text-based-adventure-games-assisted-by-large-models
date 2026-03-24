@@ -10,6 +10,9 @@ import SettingsPage from "./pages/SettingsPage";
 import AdminStoriesPage from "./pages/admin/AdminStoriesPage";
 import AdminMetadataPage from "./pages/admin/AdminMetadataPage";
 import AdminRagConfigPage from "./pages/admin/AdminRagConfigPage";
+import AdminEvalPage from "./pages/admin/AdminEvalPage";
+import AdminPromptsPage from "./pages/admin/AdminPromptsPage";
+import AdminSessionsPage from "./pages/admin/AdminSessionsPage";
 import { AppToaster } from "./components/ui/AppToaster";
 import StoryLibraryPage from "./pages/StoryLibraryPage";
 import NewSessionPage from "./pages/NewSessionPage";
@@ -57,6 +60,9 @@ function AppRoutes() {
             <Route path="/admin/stories" element={<AdminStoriesPage />} />
             <Route path="/admin/metadata" element={<AdminMetadataPage />} />
             <Route path="/admin/rag-config" element={<AdminRagConfigPage />} />
+            <Route path="/admin/prompts" element={<AdminPromptsPage />} />
+            <Route path="/admin/eval" element={<AdminEvalPage />} />
+            <Route path="/admin/sessions" element={<AdminSessionsPage />} />
           </Route>
         </Route>
       </Routes>

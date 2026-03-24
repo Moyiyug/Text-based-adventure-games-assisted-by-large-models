@@ -1,5 +1,6 @@
 from app.core.database import Base
 from app.models.content import Chapter, Scene, TextChunk
+from app.models.eval import EvalCase, EvalResult, EvalRun
 from app.models.ingestion import IngestionJob, IngestionWarning
 from app.models.knowledge import Entity, Relationship, RiskSegment, TimelineEvent
 from app.models.profile import StoryProfile, UserProfile
@@ -32,4 +33,7 @@ __all__ = [
     "SessionMessage",
     "UserFeedback",
     "PromptTemplate",
+    "EvalRun",
+    "EvalCase",
+    "EvalResult",
 ]

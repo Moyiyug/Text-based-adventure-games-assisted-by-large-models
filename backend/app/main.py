@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.admin.eval import router as admin_eval_router
 from app.api.admin.metadata import router as admin_metadata_router
 from app.api.admin.prompts import router as admin_prompts_router
 from app.api.admin.rag_configs import router as admin_rag_configs_router
@@ -33,6 +34,7 @@ app.include_router(admin_metadata_router, prefix="/api/admin/stories", tags=["ad
 app.include_router(admin_rag_configs_router, prefix="/api/admin", tags=["admin-rag-configs"])
 app.include_router(admin_prompts_router, prefix="/api/admin", tags=["admin-prompts"])
 app.include_router(admin_sessions_router, prefix="/api/admin", tags=["admin-sessions"])
+app.include_router(admin_eval_router, prefix="/api/admin", tags=["admin-eval"])
 app.include_router(stories_router, prefix="/api/stories", tags=["stories"])
 app.include_router(sessions_router, prefix="/api/sessions", tags=["sessions"])
 

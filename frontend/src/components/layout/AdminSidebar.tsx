@@ -1,11 +1,22 @@
 import { Link, useLocation } from "react-router-dom";
-import { BookOpen, Database, Library, SlidersHorizontal } from "lucide-react";
+import {
+  BookOpen,
+  ClipboardList,
+  Database,
+  FileCode2,
+  FlaskConical,
+  Library,
+  SlidersHorizontal,
+} from "lucide-react";
 import { cn } from "../../lib/utils";
 
 const items = [
   { to: "/admin/stories", label: "作品与入库", icon: Library },
   { to: "/admin/metadata", label: "元数据编辑", icon: Database },
+  { to: "/admin/prompts", label: "提示词编辑", icon: FileCode2 },
   { to: "/admin/rag-config", label: "RAG 方案配置", icon: SlidersHorizontal },
+  { to: "/admin/eval", label: "评测面板", icon: FlaskConical },
+  { to: "/admin/sessions", label: "会话查看", icon: ClipboardList },
 ];
 
 export function AdminSidebar() {
