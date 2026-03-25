@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     NARRATIVE_CHOICE_GROUNDING_EVIDENCE_CHARS: int = 2500
     NARRATIVE_CHOICE_GROUNDING_NARRATIVE_CHARS: int = 3500
 
+    # --- Turn wall-clock timing (Phase 10 / BACKEND_STRUCTURE §4.4.6) ---
+    # true 时每轮 SSE 叙事在 INFO 打一条 turn_timing JSON（含 session_id、turn、各段 ms）。
+    NARRATIVE_TURN_TIMING_LOG: bool = True
+    # true 时在日志中附带 grounding 每 attempt 的 ms（grounding_attempt_1_ms 等）。
+    NARRATIVE_TURN_TIMING_VERBOSE: bool = False
+
     # --- Profile inference (Phase 5) ---
     # false 时不调用 DeepSeek 推断画像（开发省成本）。
     PROFILE_INFERENCE_ENABLED: bool = False
@@ -95,6 +101,8 @@ class Settings(BaseSettings):
     EVAL_GENERATE_TIMEOUT: float = 120.0
     EVAL_ANSWER_TIMEOUT: float = 90.0
     EVAL_JUDGE_TIMEOUT: float = 90.0
+    # 会话消息 metadata 中 eval_grounding_context 最大字符数（防止 SQLite JSON 过大）。
+    EVAL_SNAPSHOT_CONTEXT_MAX_CHARS: int = 120000
 
     # --- App ---
     APP_ENV: str = "development"

@@ -19,7 +19,7 @@ from app.models.session import Session as NarrativeSession
 from app.models.session import SessionMessage
 from app.models.story import Story, StoryVersion
 from app.models.user import User
-from app.services.eval import SESSION_TURN, run_evaluation_job
+from app.services.eval import SESSION_TURN, _RUBRIC_SESSION_STRICT, run_evaluation_job
 from app.services.rag.base import RetrievalResult
 
 
@@ -230,6 +230,114 @@ def test_run_evaluation_job_with_mocks() -> None:
             assert rows[0].story_quality_score == 0.7
             assert rows[0].choices_grounding_score is None
             assert run.avg_choices_grounding is None
+
+    try:
+        asyncio.run(_run())
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_session_turn_with_play_snapshot_skips_dispatch_retrieve() -> None:
+    """有 play_grounding_context 时不应再 dispatch_retrieve，避免评测检索与游玩当轮不一致。"""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+
+    async def _run() -> None:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with SessionLocal() as s:
+            s.add(
+                User(
+                    username="snap",
+                    password_hash=hash_password("pw12345678"),
+                    display_name="N",
+                    role="admin",
+                )
+            )
+            s.add(RagConfig(name="r4", variant_type="naive_hybrid", config={}, is_active=True))
+            s.add(Story(title="St4", description=None, status="ready"))
+            await s.flush()
+            s.add(
+                StoryVersion(
+                    story_id=1,
+                    version_number=1,
+                    is_active=True,
+                    is_backup=False,
+                    is_archived=False,
+                )
+            )
+            await s.flush()
+            snap_chunks = [
+                {
+                    "text_chunk_id": 42,
+                    "score": 0.91,
+                    "source": "ch1",
+                    "preview": "快照块预览",
+                }
+            ]
+            s.add(
+                EvalCase(
+                    story_version_id=1,
+                    case_type=SESSION_TURN,
+                    question="玩家行动",
+                    evidence_spans=[
+                        {"kind": "session_meta", "mode": "strict"},
+                        {
+                            "kind": "play_grounding_context",
+                            "text": "【游玩当轮注入的上下文】与 GM 一致",
+                        },
+                        {
+                            "kind": "retrieval_snapshot",
+                            "data": {"chunks": snap_chunks, "structured": []},
+                        },
+                        {"kind": "gm_output", "text": "GM 正文"},
+                    ],
+                    rubric=_RUBRIC_SESSION_STRICT,
+                )
+            )
+            s.add(
+                EvalRun(
+                    rag_config_id=1,
+                    story_version_id=1,
+                    status="pending",
+                    total_cases=0,
+                )
+            )
+            await s.commit()
+
+        from app.core import database as dbmod
+
+        orig = dbmod.async_session_factory
+        dbmod.async_session_factory = SessionLocal
+        judge_json = (
+            '{"faithfulness_score":1.0,"story_quality_score":0.9,'
+            '"choices_grounding_score":null,"judge_reasoning":"与快照一致"}'
+        )
+        dispatch_mock = AsyncMock()
+        try:
+            with (
+                patch(
+                    "app.services.eval.dispatch_retrieve",
+                    new=dispatch_mock,
+                ),
+                patch(
+                    "app.services.eval.deepseek_chat",
+                    new_callable=AsyncMock,
+                    return_value=judge_json,
+                ),
+            ):
+                await run_evaluation_job(1, [1])
+        finally:
+            dbmod.async_session_factory = orig
+
+        dispatch_mock.assert_not_called()
+        async with SessionLocal() as s2:
+            res = await s2.execute(select(EvalResult).where(EvalResult.eval_run_id == 1))
+            row = res.scalars().first()
+            assert row is not None
+            assert row.retrieved_context == snap_chunks
+            assert row.structured_facts_used == []
+            assert row.generated_answer == "GM 正文"
 
     try:
         asyncio.run(_run())

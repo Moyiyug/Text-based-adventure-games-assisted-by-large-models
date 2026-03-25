@@ -89,3 +89,24 @@ def assemble_context(
             out = out[: max(0, len(out) - 200)]
         out = out.rstrip() + "\n…[上下文已截断]"
     return out
+
+
+def serialize_retrieval_parts(
+    retrieved: RetrievalResult,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """将检索结果序列化为可 JSON 落库的结构（评测快照、EvalResult 等）。"""
+    chunks_out: list[dict[str, Any]] = []
+    for c in retrieved.chunks:
+        preview = (c.content[:400] + "…") if len(c.content) > 400 else c.content
+        chunks_out.append(
+            {
+                "text_chunk_id": c.text_chunk_id,
+                "score": c.score,
+                "source": c.source,
+                "preview": preview,
+            }
+        )
+    structured_out: list[dict[str, Any]] = []
+    for s in retrieved.structured:
+        structured_out.append({"kind": s.kind, "payload": s.payload})
+    return chunks_out, structured_out

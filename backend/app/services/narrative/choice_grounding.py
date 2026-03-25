@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -132,6 +133,7 @@ async def ground_choices_for_turn(
     choices: list[str],
     beats: list[str] | None,
     max_attempts: int | None = None,
+    attempt_timings_ms: list[int] | None = None,
 ) -> GroundingResult:
     """
     对候选 choices 做多轮 LLM 质检与改写。choices 少于 2 条时直接返回，不调用模型。
@@ -198,6 +200,7 @@ async def ground_choices_for_turn(
             + json.dumps(payload, ensure_ascii=False)
         )
 
+        t_llm = time.perf_counter()
         try:
             raw = await deepseek_chat(
                 [
@@ -209,7 +212,11 @@ async def ground_choices_for_turn(
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("choice_grounding deepseek_chat failed: %s", e)
+            if attempt_timings_ms is not None:
+                attempt_timings_ms.append(int(round((time.perf_counter() - t_llm) * 1000)))
             break
+        if attempt_timings_ms is not None:
+            attempt_timings_ms.append(int(round((time.perf_counter() - t_llm) * 1000)))
 
         obj = _extract_json_object(raw)
         if not obj:

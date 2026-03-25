@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import unicodedata
 
 from app.services.narrative.choice_fallback import synthesize_choices_from_context
@@ -59,6 +60,7 @@ async def ensure_at_least_two_choices(
     user_input: str,
     assembled_context: str | None = None,
     templates: dict[str, str] | None = None,
+    timing_synthesize_ms: list[int] | None = None,
 ) -> tuple[list[str], list[str] | None, str | None, bool]:
     """
     去重 → 不足 2 条则强制 synthesize（带检索节选）→ 仍不足则用占位。
@@ -76,12 +78,15 @@ async def ensure_at_least_two_choices(
         logger.warning("ensure_at_least_two_choices: empty narrative, using placeholder pair")
         return list(_PLACEHOLDER_CHOICES), None, "placeholder_fallback", was_deduped
 
+    t_syn = time.perf_counter()
     syn = await synthesize_choices_from_context(
         user_input=user_input,
         narrative=narrative,
         assembled_context=assembled_context,
         templates=templates,
     )
+    if timing_synthesize_ms is not None:
+        timing_synthesize_ms.append(int(round((time.perf_counter() - t_syn) * 1000)))
     if len(syn) >= 2:
         return syn, None, "llm_fallback", was_deduped
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,7 +45,8 @@ from app.services.profile_loader import (
     load_session_profile_bundle,
     profile_bundle_nonempty,
 )
-from app.services.rag.context import assemble_context
+from app.services.rag.base import RetrievalResult
+from app.services.rag.context import assemble_context, serialize_retrieval_parts
 from app.services.rag.dispatcher import dispatch_retrieve
 
 logger = logging.getLogger(__name__)
@@ -139,6 +141,7 @@ async def _apply_choice_grounding_or_refine(
     evidence_context: str,
     choices: list[str],
     beats: list[str] | None,
+    grounding_attempt_timings_ms: list[int] | None = None,
 ) -> tuple[list[str], list[str] | None, bool, bool, int]:
     """
     候选 options：开启 grounding 时走 ``ground_choices_for_turn``，否则 ``_maybe_refine_strict_choices``。
@@ -153,6 +156,7 @@ async def _apply_choice_grounding_or_refine(
             evidence_context=evidence_context,
             choices=choices,
             beats=beats,
+            attempt_timings_ms=grounding_attempt_timings_ms,
         )
         return (
             gr.choices,
@@ -170,6 +174,48 @@ async def _apply_choice_grounding_or_refine(
         beats=beats,
     )
     return ch, be, refined, False, 0
+
+
+def _log_turn_timing(
+    session_id: int,
+    turn_number: int,
+    status: str,
+    payload: dict[str, Any],
+) -> None:
+    """BACKEND_STRUCTURE §4.4.6：单条 JSON 行，便于 grep / 聚合。"""
+    if not settings.NARRATIVE_TURN_TIMING_LOG:
+        return
+    out: dict[str, Any] = {
+        "event": "turn_timing",
+        "session_id": session_id,
+        "turn_number": turn_number,
+        "status": status,
+        **payload,
+    }
+    if not settings.NARRATIVE_TURN_TIMING_VERBOSE:
+        for k in list(out.keys()):
+            if k.startswith("grounding_attempt_") and k.endswith("_ms"):
+                del out[k]
+    logger.info("turn_timing %s", json.dumps(out, ensure_ascii=False))
+
+
+def _attach_eval_grounding_snapshot(
+    meta: dict[str, Any],
+    *,
+    retrieved: RetrievalResult,
+    assembled_context: str,
+    query_text: str,
+) -> None:
+    """写入评测用 grounding 快照，供 session_turn 抽样与评委对齐游玩当轮注入。"""
+    qt = (query_text or "").strip()
+    if qt:
+        meta["eval_query_text"] = qt[:4000]
+    ctx = (assembled_context or "").strip()
+    if ctx:
+        cap = settings.EVAL_SNAPSHOT_CONTEXT_MAX_CHARS
+        meta["eval_grounding_context"] = ctx[:cap] if len(ctx) > cap else ctx
+    ch, st = serialize_retrieval_parts(retrieved)
+    meta["eval_retrieval_snapshot"] = {"chunks": ch, "structured": st}
 
 
 def _merge_grounding_turn_meta(
@@ -351,6 +397,8 @@ async def generate_opening(
             syn = await synthesize_choices_from_context(
                 user_input="（故事开场，尚无玩家上一句行动。）",
                 narrative=narrative_body,
+                assembled_context=context,
+                templates=templates,
             )
         except Exception as fb_exc:  # noqa: BLE001
             logger.warning("opening choices LLM fallback error: %s", fb_exc)
@@ -418,6 +466,12 @@ async def generate_opening(
         opening_meta["choices_deduplicated"] = True
     if source_override in ("llm_fallback", "placeholder_fallback"):
         opening_meta["choices_min_enforced"] = True
+    _attach_eval_grounding_snapshot(
+        opening_meta,
+        retrieved=retrieved,
+        assembled_context=context,
+        query_text=session.opening_goal or "开场",
+    )
     _merge_grounding_turn_meta(
         opening_meta,
         choices_len=len(choices_body),
@@ -470,6 +524,13 @@ async def process_turn_sse(
     """
     text = user_input.strip()
     if not text:
+        if settings.NARRATIVE_TURN_TIMING_LOG:
+            _log_turn_timing(
+                session.id,
+                session.turn_count + 1,
+                "error",
+                {"phase": "validation", "message": "empty_input"},
+            )
         yield _sse_line({"type": "error", "message": "内容不能为空"})
         yield _sse_line({"type": "done"})
         return
@@ -489,6 +550,8 @@ async def process_turn_sse(
     )
     await db.flush()
 
+    t_prep_start = time.perf_counter()
+    retrieve_ms = 0
     retrieved = None
     try:
         templates = await load_prompt_templates(db, session.mode)
@@ -496,12 +559,14 @@ async def process_turn_sse(
             db, session.user_id, session.story_id
         )
         profile_used = profile_bundle_nonempty(profile_bundle)
+        t_r0 = time.perf_counter()
         retrieved = await dispatch_retrieve(
             db,
             text,
             session.story_version_id,
             session.rag_config_id,
         )
+        retrieve_ms = int(round((time.perf_counter() - t_r0) * 1000))
         context = assemble_context(
             retrieved,
             mode=session.mode,
@@ -560,11 +625,25 @@ async def process_turn_sse(
         )
     except Exception as e:  # noqa: BLE001
         logger.exception("process_turn 准备阶段失败 session_id=%s", session.id)
+        if settings.NARRATIVE_TURN_TIMING_LOG:
+            _log_turn_timing(
+                session.id,
+                current_turn,
+                "error",
+                {
+                    "phase": "prep",
+                    "prep_total_ms": int(round((time.perf_counter() - t_prep_start) * 1000)),
+                    "retrieve_ms": retrieve_ms,
+                    "message": str(e)[:300],
+                },
+            )
         yield _sse_line({"type": "error", "message": str(e)[:800]})
         yield _sse_line({"type": "done"})
         await db.rollback()
         return
 
+    prep_total_ms = int(round((time.perf_counter() - t_prep_start) * 1000))
+    t_stream_start = time.perf_counter()
     splitter = MetaStreamSplitter()
     try:
         async for delta in deepseek_chat_stream(messages, temperature=0.35):
@@ -573,6 +652,20 @@ async def process_turn_sse(
                     yield _sse_line({"type": "token", "content": piece})
     except Exception as e:  # noqa: BLE001
         # 流式回合遇内容策略拦截：rollback（含本轮 user 消息），不落库 fallback，与 IMPLEMENTATION_PLAN 4.6 一致。
+        stream_until_last_token_ms = int(round((time.perf_counter() - t_stream_start) * 1000))
+        if settings.NARRATIVE_TURN_TIMING_LOG:
+            _log_turn_timing(
+                session.id,
+                current_turn,
+                "error",
+                {
+                    "phase": "stream",
+                    "prep_total_ms": prep_total_ms,
+                    "retrieve_ms": retrieve_ms,
+                    "stream_until_last_token_ms": stream_until_last_token_ms,
+                    "message": str(e)[:300],
+                },
+            )
         if is_likely_content_policy_block(e):
             fb = handle_api_block(session.id, text)
             logger.warning("turn stream content policy block: %s", fb.log_message)
@@ -589,10 +682,20 @@ async def process_turn_sse(
         await db.rollback()
         return
 
+    stream_until_last_token_ms = int(round((time.perf_counter() - t_stream_start) * 1000))
+    t_post_start = time.perf_counter()
+    two_phase_meta_ms = 0
+    choices_llm_fallback_ms = 0
+    grounding_total_ms = 0
+    grounding_attempt_ms: list[int] = []
+    ensure_total_ms = 0
+    ensure_min_two_synthesize_ms = 0
+
     parsed_stream = splitter.finalize()
     narrative_for_db = strip_leaking_meta_suffix(parsed_stream.narrative)
 
     if settings.NARRATIVE_TWO_PHASE_ENABLED:
+        t_tp = time.perf_counter()
         try:
             messages2 = build_two_phase_meta_prompt(
                 context=context,
@@ -607,6 +710,7 @@ async def process_turn_sse(
         except Exception as e2:  # noqa: BLE001
             logger.warning("turn two_phase round2 failed: %s", e2)
             raw2 = ""
+        two_phase_meta_ms = int(round((time.perf_counter() - t_tp) * 1000))
         p2 = parse_complete_model_output(raw2 or "")
         parsed = ParsedTurnOutput(
             narrative=narrative_for_db,
@@ -651,14 +755,18 @@ async def process_turn_sse(
         and settings.NARRATIVE_CHOICES_LLM_FALLBACK
         and narrative_for_db.strip()
     ):
+        t_fb = time.perf_counter()
         try:
             syn = await synthesize_choices_from_context(
                 user_input=text,
                 narrative=narrative_for_db,
+                assembled_context=context,
+                templates=templates,
             )
         except Exception as fb_exc:  # noqa: BLE001
             logger.warning("turn choices LLM fallback error: %s", fb_exc)
             syn = []
+        choices_llm_fallback_ms = int(round((time.perf_counter() - t_fb) * 1000))
         if syn:
             choices = syn
             choices_source_val = "llm_fallback"
@@ -667,6 +775,7 @@ async def process_turn_sse(
     if choices_source_val in ("narrative_regex", "llm_fallback"):
         choice_beats_val = None
 
+    t_gr = time.perf_counter()
     (
         choices,
         choice_beats_val,
@@ -680,8 +789,14 @@ async def process_turn_sse(
         evidence_context=context,
         choices=choices,
         beats=choice_beats_val,
+        grounding_attempt_timings_ms=grounding_attempt_ms
+        if settings.NARRATIVE_TURN_TIMING_VERBOSE
+        else None,
     )
+    grounding_total_ms = int(round((time.perf_counter() - t_gr) * 1000))
 
+    timing_syn: list[int] = []
+    t_en = time.perf_counter()
     choices, choice_beats_val, turn_source_override, turn_choices_deduped = (
         await ensure_at_least_two_choices(
             choices=choices,
@@ -690,15 +805,39 @@ async def process_turn_sse(
             user_input=text,
             assembled_context=context,
             templates=templates,
+            timing_synthesize_ms=timing_syn if settings.NARRATIVE_TURN_TIMING_LOG else None,
         )
     )
+    ensure_total_ms = int(round((time.perf_counter() - t_en) * 1000))
+    ensure_min_two_synthesize_ms = sum(timing_syn) if timing_syn else 0
     if turn_source_override is not None:
         choices_source_val = turn_source_override
 
     su = parsed.state_update if not parsed.parse_error else {}
     validated = validate_state_update(state, su)
 
+    def _timing_error_payload(*, phase: str, message: str) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "phase": phase,
+            "message": message,
+            "prep_total_ms": prep_total_ms,
+            "retrieve_ms": retrieve_ms,
+            "stream_until_last_token_ms": stream_until_last_token_ms,
+            "two_phase_meta_ms": two_phase_meta_ms,
+            "choices_llm_fallback_ms": choices_llm_fallback_ms,
+            "grounding_total_ms": grounding_total_ms,
+            "ensure_total_ms": ensure_total_ms,
+            "ensure_min_two_synthesize_ms": ensure_min_two_synthesize_ms,
+            "dedupe_and_ensure_min_ms": ensure_total_ms,
+            "post_stream_total_ms": int(round((time.perf_counter() - t_post_start) * 1000)),
+        }
+        for i, ms in enumerate(grounding_attempt_ms, start=1):
+            base[f"grounding_attempt_{i}_ms"] = ms
+        return base
+
+    db_commit_ms = 0
     try:
+        t_db = time.perf_counter()
         await apply_state_update(db, session.id, current_turn, validated)
         turn_meta: dict[str, Any] = {
             "choices": choices,
@@ -715,6 +854,13 @@ async def process_turn_sse(
             turn_meta["choices_deduplicated"] = True
         if turn_source_override in ("llm_fallback", "placeholder_fallback"):
             turn_meta["choices_min_enforced"] = True
+        assert retrieved is not None  # 成功走过检索与组装的回合必有检索结果
+        _attach_eval_grounding_snapshot(
+            turn_meta,
+            retrieved=retrieved,
+            assembled_context=context,
+            query_text=text,
+        )
         _merge_grounding_turn_meta(
             turn_meta,
             choices_len=len(choices),
@@ -742,17 +888,45 @@ async def process_turn_sse(
         session.updated_at = datetime.now(timezone.utc)
         await db.commit()
         schedule_profile_inference_after_turn(session.id, session.turn_count)
+        db_commit_ms = int(round((time.perf_counter() - t_db) * 1000))
     except Exception as e:  # noqa: BLE001
         logger.exception("process_turn 落库失败 session_id=%s", session.id)
+        if settings.NARRATIVE_TURN_TIMING_LOG:
+            _log_turn_timing(
+                session.id,
+                current_turn,
+                "error",
+                _timing_error_payload(phase="commit", message=str(e)[:300]),
+            )
         yield _sse_line({"type": "error", "message": f"落库失败: {e}"[:800]})
         await db.rollback()
         yield _sse_line({"type": "done"})
         return
 
+    post_stream_total_ms = int(round((time.perf_counter() - t_post_start) * 1000))
+    t_sse = time.perf_counter()
     yield _sse_line({"type": "choices", "choices": choices})
     yield _sse_line({"type": "state_update", "state": validated})
     if parsed.parse_error:
         yield _sse_line({"type": "error", "message": parsed.parse_error})
     yield _sse_line({"type": "done"})
+    sse_after_commit_ms = int(round((time.perf_counter() - t_sse) * 1000))
 
-    yield _sse_line({"type": "done"})
+    if settings.NARRATIVE_TURN_TIMING_LOG:
+        ok_payload: dict[str, Any] = {
+            "prep_total_ms": prep_total_ms,
+            "retrieve_ms": retrieve_ms,
+            "stream_until_last_token_ms": stream_until_last_token_ms,
+            "post_stream_total_ms": post_stream_total_ms,
+            "two_phase_meta_ms": two_phase_meta_ms,
+            "choices_llm_fallback_ms": choices_llm_fallback_ms,
+            "grounding_total_ms": grounding_total_ms,
+            "ensure_total_ms": ensure_total_ms,
+            "dedupe_and_ensure_min_ms": ensure_total_ms,
+            "ensure_min_two_synthesize_ms": ensure_min_two_synthesize_ms,
+            "db_commit_ms": db_commit_ms,
+            "sse_after_commit_ms": sse_after_commit_ms,
+        }
+        for i, ms in enumerate(grounding_attempt_ms, start=1):
+            ok_payload[f"grounding_attempt_{i}_ms"] = ms
+        _log_turn_timing(session.id, current_turn, "ok", ok_payload)

@@ -21,7 +21,7 @@ from app.models.story import StoryVersion
 from app.services.llm.deepseek import deepseek_chat
 from app.services.narrative.meta_parse import strip_leaking_meta_suffix
 from app.services.rag.base import RetrievalResult
-from app.services.rag.context import assemble_context
+from app.services.rag.context import assemble_context, serialize_retrieval_parts
 from app.services.rag.dispatcher import dispatch_retrieve
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,16 @@ STANDARD_CASE_TYPES = frozenset(
     }
 )
 SESSION_TURN = "session_turn"
+
+# 会话抽样写入 EvalCase.rubric；与 _faithfulness_note_for_case 语义一致。
+_RUBRIC_SESSION_STRICT = (
+    "会话回放·严谨模式：评价 GM 输出相对本回合注入的原作依据（见【检索上下文摘录】）是否捏造、是否与该依据明显矛盾；"
+    "叙事是否自然。若有可点选项，须可被该依据支持。"
+)
+_RUBRIC_SESSION_CREATIVE = (
+    "会话回放·创作模式：评价 GM 输出相对本回合叙事上下文（见【检索上下文摘录】及 evidence 中可能附带的上一段 GM 摘要）是否自洽、是否无中生有；"
+    "叙事是否自然。若有可点选项，须与该上下文相符。"
+)
 
 _GEN_SYSTEM = """你是 RAG 叙事作品的测试用例设计助手。根据给定作品文本摘录，生成评测题。
 只输出一个 JSON 数组（不要 markdown 代码块以外的文字）。数组中每个元素为对象，字段：
@@ -103,20 +113,73 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
 
 
 def _serialize_retrieval(retrieved: RetrievalResult) -> tuple[list[Any], list[Any]]:
-    chunks_out: list[dict[str, Any]] = []
-    for c in retrieved.chunks:
-        chunks_out.append(
-            {
-                "text_chunk_id": c.text_chunk_id,
-                "score": c.score,
-                "source": c.source,
-                "preview": (c.content[:400] + "…") if len(c.content) > 400 else c.content,
-            }
-        )
-    structured_out: list[dict[str, Any]] = []
-    for s in retrieved.structured:
-        structured_out.append({"kind": s.kind, "payload": s.payload})
-    return chunks_out, structured_out
+    ch, st = serialize_retrieval_parts(retrieved)
+    return ch, st
+
+
+def _session_mode_from_evidence(spans: list[Any] | None) -> str | None:
+    for span in spans or []:
+        if isinstance(span, dict) and span.get("kind") == "session_meta":
+            m = span.get("mode")
+            if m in ("strict", "creative"):
+                return str(m)
+    return None
+
+
+def _play_grounding_context_from_evidence(spans: list[Any] | None) -> str | None:
+    for span in spans or []:
+        if isinstance(span, dict) and span.get("kind") == "play_grounding_context":
+            t = str(span.get("text") or "").strip()
+            if t:
+                return t
+    return None
+
+
+def _retrieval_snapshot_from_evidence(spans: list[Any] | None) -> dict[str, Any] | None:
+    for span in spans or []:
+        if not isinstance(span, dict) or span.get("kind") != "retrieval_snapshot":
+            continue
+        data = span.get("data")
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def _session_turn_rubric_with_fallback(
+    base_rubric: str | None, *, has_play_snapshot: bool
+) -> str:
+    base = (base_rubric or "").strip()
+    if has_play_snapshot:
+        return base or _RUBRIC_SESSION_STRICT
+    suffix = (
+        "【注意】本用例无当轮 grounding 快照，下列摘录为评测时用玩家输入重跑的检索，"
+        "与游玩当轮注入可能不一致，得分仅供参考。"
+    )
+    return f"{base}\n{suffix}".strip() if base else suffix
+
+
+def _prior_assistant_excerpt_from_messages(
+    messages: list[SessionMessage], turn_number: int
+) -> str | None:
+    by_turn: dict[int, dict[str, SessionMessage]] = {}
+    for m in messages:
+        by_turn.setdefault(m.turn_number, {})[m.role] = m
+    prev = turn_number - 1
+    if prev < 1:
+        return None
+    bucket = by_turn.get(prev)
+    if not bucket:
+        return None
+    a = bucket.get("assistant")
+    if a is None:
+        return None
+    t = strip_leaking_meta_suffix(a.content or "").strip()
+    if not t:
+        return None
+    max_chars = 2400
+    if len(t) > max_chars:
+        return t[:max_chars] + "…"
+    return t
 
 
 def _gm_from_session_case(case: EvalCase) -> str:
@@ -224,12 +287,32 @@ async def _answer_from_context(context: str, question: str) -> str:
     ).strip()
 
 
-_JUDGE_SYSTEM = """你是评测评委。根据「检索上下文摘要」「评分要点 rubric」「证据线索 evidence_spans」「模型回答」及（若有）「本回合可点选项」打分。
+def _faithfulness_note_for_case(case: EvalCase) -> str:
+    if case.case_type != SESSION_TURN:
+        return "faithfulness：模型回答是否忠实于【检索上下文摘录】、无捏造。"
+    mode = _session_mode_from_evidence(case.evidence_spans)
+    if mode == "strict":
+        return (
+            "faithfulness（会话回放·严谨模式）：GM 输出是否忠实于【检索上下文摘录】所呈现的本回合原作依据；"
+            "有无与该依据矛盾或明显编造；勿用未出现在摘录中的全书细节苛求。"
+        )
+    if mode == "creative":
+        return (
+            "faithfulness（会话回放·创作模式）：GM 输出是否忠实于【检索上下文摘录】及 evidence 中可能附带的"
+            " prior_narrative_hint 所构成的当轮叙事上下文；是否在该上下文内自洽、有无无中生有。"
+        )
+    return (
+        "faithfulness（会话回放）：以【检索上下文摘录】为参照，评 GM 输出是否与之严重矛盾或捏造；"
+        "若 rubric 提示无当轮快照，则摘录可能来自评测重检索，请结合该说明判断。"
+    )
+
+
+_JUDGE_SYSTEM = """你是评测评委。根据「faithfulness 说明」「检索上下文摘录」「评分要点 rubric」「证据线索 evidence_spans」「模型回答」及（若有）「本回合可点选项」打分。
 只输出一个 JSON 对象，不要 markdown。格式：
 {"faithfulness_score":0到1的小数,"story_quality_score":0到1的小数,"choices_grounding_score":0到1的小数或null,"judge_reasoning":"简短中文理由"}
-faithfulness：回答是否忠实于检索材料、无捏造。
+faithfulness 的含义以 user 中【faithfulness 说明】为准，勿改用其他标准。
 story_quality：叙事是否连贯、有代入感（问答类也可从清晰度评）。
-choices_grounding_score：仅当 user 中【本回合可点选项】为非空列表且至少 2 条时，评 0～1——各选项是否可被检索摘录支持、无明显编造或与上下文矛盾；否则必须为 JSON null（不要用字符串 "null"）。"""
+choices_grounding_score：仅当 user 中【本回合可点选项】为非空列表且至少 2 条时，评 0～1——各选项是否可被【检索上下文摘录】支持、无明显编造或与之矛盾；否则必须为 JSON null（不要用字符串 "null"）。"""
 
 
 def _parse_grounding_score(obj: dict[str, Any], has_choice_list: bool) -> float | None:
@@ -248,9 +331,15 @@ async def _judge(
     context_excerpt: str,
     case: EvalCase,
     generated_answer: str,
+    rubric_override: str | None = None,
 ) -> tuple[float | None, float | None, float | None, str | None]:
     spans_json = json.dumps(case.evidence_spans or [], ensure_ascii=False)
-    rubric = case.rubric or "从忠实性与叙事/表达质量两方面评分。"
+    rubric = (
+        rubric_override
+        if rubric_override is not None
+        else (case.rubric or "从忠实性与叙事/表达质量两方面评分。")
+    )
+    ff_note = _faithfulness_note_for_case(case)
     choice_items = _choices_from_eval_case(case)
     has_choices = bool(choice_items and len(choice_items) >= 2)
     if has_choices:
@@ -262,6 +351,7 @@ async def _judge(
     else:
         choices_user = "【本回合可点选项】\n无（choices_grounding_score 必须为 null）"
     user = (
+        f"【faithfulness 说明】\n{ff_note}\n\n"
         f"【检索上下文摘录】\n{context_excerpt[:12000]}\n\n"
         f"【evidence_spans】\n{spans_json}\n\n"
         f"【rubric】\n{rubric}\n\n"
@@ -297,26 +387,52 @@ async def _evaluate_one_case(
     story_version_id: int,
 ) -> EvalResult:
     query = case.question.strip()
-    retrieved = await dispatch_retrieve(db, query, story_version_id, rag_config_id)
-    ctx = assemble_context(
-        retrieved,
-        mode="strict",
-        token_budget=settings.EVAL_CONTEXT_TOKEN_BUDGET,
-    )
-    rc_json, sf_json = _serialize_retrieval(retrieved)
+    rubric_override: str | None = None
 
     if case.case_type == SESSION_TURN:
-        gen = _gm_from_session_case(case)
-        if not gen:
-            gen = "（未能解析 GM 输出）"
+        gen = _gm_from_session_case(case) or "（未能解析 GM 输出）"
+        play_ctx = _play_grounding_context_from_evidence(case.evidence_spans)
+        snap = _retrieval_snapshot_from_evidence(case.evidence_spans)
+        mode_ev = _session_mode_from_evidence(case.evidence_spans)
+        ac_mode = mode_ev if mode_ev in ("strict", "creative") else "strict"
+        if play_ctx:
+            ctx_excerpt = play_ctx.strip()
+            if snap:
+                rc_json = list(snap.get("chunks") or [])
+                sf_json = list(snap.get("structured") or [])
+            else:
+                rc_json, sf_json = [], []
+            rubric_override = None
+        else:
+            retrieved = await dispatch_retrieve(db, query, story_version_id, rag_config_id)
+            ctx = assemble_context(
+                retrieved,
+                mode=ac_mode,
+                token_budget=settings.EVAL_CONTEXT_TOKEN_BUDGET,
+            )
+            rc_json, sf_json = _serialize_retrieval(retrieved)
+            ctx_excerpt = (
+                ctx if ctx.strip() else json.dumps(rc_json, ensure_ascii=False)[:8000]
+            )
+            rubric_override = _session_turn_rubric_with_fallback(
+                case.rubric, has_play_snapshot=False
+            )
     else:
+        retrieved = await dispatch_retrieve(db, query, story_version_id, rag_config_id)
+        ctx = assemble_context(
+            retrieved,
+            mode="strict",
+            token_budget=settings.EVAL_CONTEXT_TOKEN_BUDGET,
+        )
+        rc_json, sf_json = _serialize_retrieval(retrieved)
         gen = await _answer_from_context(ctx, case.question)
+        ctx_excerpt = ctx if ctx.strip() else json.dumps(rc_json, ensure_ascii=False)[:8000]
 
-    ctx_excerpt = ctx if ctx.strip() else json.dumps(rc_json, ensure_ascii=False)[:8000]
     ff, sq, cg, jr = await _judge(
         context_excerpt=ctx_excerpt,
         case=case,
         generated_answer=gen,
+        rubric_override=rubric_override if case.case_type == SESSION_TURN else None,
     )
 
     return EvalResult(
@@ -503,18 +619,37 @@ async def create_sample_session_eval_run(
     for tn, user_txt, gm_txt, asst_meta in selected:
         if not user_txt:
             continue
-        spans: list[Any] = [{"kind": "gm_output", "text": gm_txt}]
+        mode_s = (sess.mode or "strict").strip()
+        if mode_s == "creative":
+            rubric_s = _RUBRIC_SESSION_CREATIVE
+        else:
+            rubric_s = _RUBRIC_SESSION_STRICT
+            mode_s = "strict"
+
+        spans: list[Any] = [{"kind": "session_meta", "mode": mode_s}]
+        egc = asst_meta.get("eval_grounding_context")
+        if isinstance(egc, str) and egc.strip():
+            cap = settings.EVAL_SNAPSHOT_CONTEXT_MAX_CHARS
+            spans.append({"kind": "play_grounding_context", "text": egc.strip()[:cap]})
+        ers = asst_meta.get("eval_retrieval_snapshot")
+        if isinstance(ers, dict) and ers:
+            spans.append({"kind": "retrieval_snapshot", "data": ers})
+        spans.append({"kind": "gm_output", "text": gm_txt})
         chs = asst_meta.get("choices")
         if isinstance(chs, list):
             items = [str(c).strip() for c in chs if str(c).strip()]
             if len(items) >= 2:
                 spans.append({"kind": "session_choices", "items": items[:8]})
+        if mode_s == "creative":
+            prior = _prior_assistant_excerpt_from_messages(messages, tn)
+            if prior:
+                spans.append({"kind": "prior_narrative_hint", "text": prior})
         row = EvalCase(
             story_version_id=sess.story_version_id,
             case_type=SESSION_TURN,
             question=user_txt,
             evidence_spans=spans,
-            rubric="评价 GM 输出相对当前玩家行动与检索材料是否忠实、叙事是否自然（会话回放）。",
+            rubric=rubric_s,
         )
         db.add(row)
         await db.flush()
