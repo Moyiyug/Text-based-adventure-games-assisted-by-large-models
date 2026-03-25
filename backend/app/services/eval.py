@@ -126,6 +126,20 @@ def _gm_from_session_case(case: EvalCase) -> str:
     return ""
 
 
+def _choices_from_eval_case(case: EvalCase) -> list[str] | None:
+    """会话抽样等用例在 evidence_spans 中附带 kind=session_choices 的 items。"""
+    for span in case.evidence_spans or []:
+        if not isinstance(span, dict) or span.get("kind") != "session_choices":
+            continue
+        raw = span.get("items")
+        if not isinstance(raw, list):
+            continue
+        out = [str(x).strip() for x in raw if str(x).strip()]
+        if len(out) >= 2:
+            return out[:8]
+    return None
+
+
 async def generate_eval_cases(
     db: AsyncSession,
     story_version_id: int,
@@ -210,11 +224,23 @@ async def _answer_from_context(context: str, question: str) -> str:
     ).strip()
 
 
-_JUDGE_SYSTEM = """你是评测评委。根据「检索上下文摘要」「评分要点 rubric」「证据线索 evidence_spans」「模型回答」打分。
+_JUDGE_SYSTEM = """你是评测评委。根据「检索上下文摘要」「评分要点 rubric」「证据线索 evidence_spans」「模型回答」及（若有）「本回合可点选项」打分。
 只输出一个 JSON 对象，不要 markdown。格式：
-{"faithfulness_score":0到1的小数,"story_quality_score":0到1的小数,"judge_reasoning":"简短中文理由"}
+{"faithfulness_score":0到1的小数,"story_quality_score":0到1的小数,"choices_grounding_score":0到1的小数或null,"judge_reasoning":"简短中文理由"}
 faithfulness：回答是否忠实于检索材料、无捏造。
-story_quality：叙事是否连贯、有代入感（问答类也可从清晰度评）。"""
+story_quality：叙事是否连贯、有代入感（问答类也可从清晰度评）。
+choices_grounding_score：仅当 user 中【本回合可点选项】为非空列表且至少 2 条时，评 0～1——各选项是否可被检索摘录支持、无明显编造或与上下文矛盾；否则必须为 JSON null（不要用字符串 "null"）。"""
+
+
+def _parse_grounding_score(obj: dict[str, Any], has_choice_list: bool) -> float | None:
+    if not has_choice_list:
+        return None
+    cg = obj.get("choices_grounding_score")
+    if cg is None or (isinstance(cg, str) and cg.lower() in ("null", "none", "")):
+        return None
+    if isinstance(cg, (int, float)):
+        return max(0.0, min(1.0, float(cg)))
+    return None
 
 
 async def _judge(
@@ -222,13 +248,24 @@ async def _judge(
     context_excerpt: str,
     case: EvalCase,
     generated_answer: str,
-) -> tuple[float | None, float | None, str | None]:
+) -> tuple[float | None, float | None, float | None, str | None]:
     spans_json = json.dumps(case.evidence_spans or [], ensure_ascii=False)
     rubric = case.rubric or "从忠实性与叙事/表达质量两方面评分。"
+    choice_items = _choices_from_eval_case(case)
+    has_choices = bool(choice_items and len(choice_items) >= 2)
+    if has_choices:
+        choices_user = (
+            "【本回合可点选项】\n"
+            + json.dumps(choice_items, ensure_ascii=False)
+            + "\n（须输出 choices_grounding_score，0～1）"
+        )
+    else:
+        choices_user = "【本回合可点选项】\n无（choices_grounding_score 必须为 null）"
     user = (
         f"【检索上下文摘录】\n{context_excerpt[:12000]}\n\n"
         f"【evidence_spans】\n{spans_json}\n\n"
         f"【rubric】\n{rubric}\n\n"
+        f"{choices_user}\n\n"
         f"【模型回答】\n{generated_answer}"
     )
     raw = await deepseek_chat(
@@ -246,8 +283,9 @@ async def _judge(
         ff_f = max(0.0, min(1.0, ff_f))
     if sq_f is not None:
         sq_f = max(0.0, min(1.0, sq_f))
+    cg_f = _parse_grounding_score(obj, has_choices)
     reason_s = str(reason).strip() if reason is not None else None
-    return ff_f, sq_f, reason_s
+    return ff_f, sq_f, cg_f, reason_s
 
 
 async def _evaluate_one_case(
@@ -275,7 +313,7 @@ async def _evaluate_one_case(
         gen = await _answer_from_context(ctx, case.question)
 
     ctx_excerpt = ctx if ctx.strip() else json.dumps(rc_json, ensure_ascii=False)[:8000]
-    ff, sq, jr = await _judge(
+    ff, sq, cg, jr = await _judge(
         context_excerpt=ctx_excerpt,
         case=case,
         generated_answer=gen,
@@ -289,6 +327,7 @@ async def _evaluate_one_case(
         structured_facts_used=sf_json,
         faithfulness_score=ff,
         story_quality_score=sq,
+        choices_grounding_score=cg,
         judge_reasoning=jr,
     )
 
@@ -301,13 +340,15 @@ async def _finalize_run_averages(db: AsyncSession, run_id: int) -> None:
         select(
             func.avg(EvalResult.faithfulness_score),
             func.avg(EvalResult.story_quality_score),
+            func.avg(EvalResult.choices_grounding_score),
             func.count(EvalResult.id),
         ).where(EvalResult.eval_run_id == run_id)
     )
     row = res.one()
-    avg_ff, avg_sq, cnt = row[0], row[1], row[2]
+    avg_ff, avg_sq, avg_cg, cnt = row[0], row[1], row[2], row[3]
     run.avg_faithfulness = float(avg_ff) if avg_ff is not None else None
     run.avg_story_quality = float(avg_sq) if avg_sq is not None else None
+    run.avg_choices_grounding = float(avg_cg) if avg_cg is not None else None
     run.total_cases = int(cnt or 0)
 
 
@@ -402,19 +443,32 @@ async def run_evaluation_job(run_id: int, case_ids: list[int] | None) -> None:
             logger.exception("run_evaluation_job failed to persist error run_id=%s", run_id)
 
 
-def _collect_user_assistant_pairs(messages: list[SessionMessage]) -> list[tuple[int, str, str]]:
-    """按 turn_number 聚合；仅保留同时含 user 与 assistant 的回合。"""
+def _collect_user_assistant_pairs(
+    messages: list[SessionMessage],
+) -> list[tuple[int, str, str, dict[str, Any]]]:
+    """按 turn_number 聚合；仅保留同时含 user 与 assistant 的回合；附带 assistant 的 metadata（用于选项列表）。"""
     by_turn: dict[int, dict[str, SessionMessage]] = {}
     for m in messages:
         by_turn.setdefault(m.turn_number, {})[m.role] = m
-    pairs: list[tuple[int, str, str]] = []
+    pairs: list[tuple[int, str, str, dict[str, Any]]] = []
     for tn in sorted(by_turn.keys()):
         bucket = by_turn[tn]
         u = bucket.get("user")
         a = bucket.get("assistant")
         if u is None or a is None:
             continue
-        pairs.append((tn, (u.content or "").strip(), strip_leaking_meta_suffix(a.content or "")))
+        meta_d: dict[str, Any] = {}
+        raw_m = a.metadata_
+        if isinstance(raw_m, dict):
+            meta_d = raw_m
+        pairs.append(
+            (
+                tn,
+                (u.content or "").strip(),
+                strip_leaking_meta_suffix(a.content or ""),
+                meta_d,
+            )
+        )
     return pairs
 
 
@@ -446,14 +500,20 @@ async def create_sample_session_eval_run(
         raise ValueError("会话中无同时含玩家与 GM 的完整回合，无法抽样评测")
 
     case_ids: list[int] = []
-    for tn, user_txt, gm_txt in selected:
+    for tn, user_txt, gm_txt, asst_meta in selected:
         if not user_txt:
             continue
+        spans: list[Any] = [{"kind": "gm_output", "text": gm_txt}]
+        chs = asst_meta.get("choices")
+        if isinstance(chs, list):
+            items = [str(c).strip() for c in chs if str(c).strip()]
+            if len(items) >= 2:
+                spans.append({"kind": "session_choices", "items": items[:8]})
         row = EvalCase(
             story_version_id=sess.story_version_id,
             case_type=SESSION_TURN,
             question=user_txt,
-            evidence_spans=[{"kind": "gm_output", "text": gm_txt}],
+            evidence_spans=spans,
             rubric="评价 GM 输出相对当前玩家行动与检索材料是否忠实、叙事是否自然（会话回放）。",
         )
         db.add(row)

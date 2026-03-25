@@ -163,6 +163,7 @@ async def list_eval_results(
                 structured_facts_used=list(r.structured_facts_used or []),
                 faithfulness_score=r.faithfulness_score,
                 story_quality_score=r.story_quality_score,
+                choices_grounding_score=r.choices_grounding_score,
                 judge_reasoning=r.judge_reasoning,
                 created_at=r.created_at,
                 case=case_brief,

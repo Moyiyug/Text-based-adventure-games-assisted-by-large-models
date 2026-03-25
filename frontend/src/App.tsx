@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { TopNav } from "./components/layout/TopNav";
 import { AuthGuard } from "./components/layout/AuthGuard";
@@ -21,18 +20,7 @@ import SessionHistoryPage from "./pages/SessionHistoryPage";
 import SessionReplayPage from "./pages/SessionReplayPage";
 import ProfilePage from "./pages/ProfilePage";
 
-/** 管理端 Radix Portal 挂在 body 下，需让 body 继承浅色语义变量，避免弹层/下拉回到深色令牌 */
-function useAdminBodyClass() {
-  const { pathname } = useLocation();
-  useEffect(() => {
-    const on = pathname.startsWith("/admin");
-    document.body.classList.toggle("admin-route", on);
-    return () => document.body.classList.remove("admin-route");
-  }, [pathname]);
-}
-
 function AppRoutes() {
-  useAdminBodyClass();
   const location = useLocation();
   const hideTopNav = location.pathname.startsWith("/admin");
 

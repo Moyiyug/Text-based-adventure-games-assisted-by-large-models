@@ -17,7 +17,7 @@ import { stripMetaSuffixForDisplay } from "../../lib/narrativeDisplay";
 import { cn } from "../../lib/utils";
 import type { AdminSessionListItem } from "../../types/adminSession";
 
-const PAGE = 30;
+const PAGE_SIZE_OPTIONS = [15, 30, 50] as const;
 
 function formatDt(iso: string | null | undefined) {
   if (!iso) return "—";
@@ -32,7 +32,11 @@ export default function AdminSessionsPage() {
   const [userId, setUserId] = useState("");
   const [storyId, setStoryId] = useState("");
   const [status, setStatus] = useState("");
+  const [pageSize, setPageSize] = useState<number>(30);
   const [offset, setOffset] = useState(0);
+  const [jumpPageRaw, setJumpPageRaw] = useState("");
+  const [transcriptSession, setTranscriptSession] = useState<AdminSessionListItem | null>(null);
+  const [feedbackSession, setFeedbackSession] = useState<AdminSessionListItem | null>(null);
 
   const listParams = useMemo(() => {
     const p: {
@@ -41,7 +45,7 @@ export default function AdminSessionsPage() {
       status?: string;
       limit: number;
       offset: number;
-    } = { limit: PAGE, offset };
+    } = { limit: pageSize, offset };
     if (userId.trim()) {
       const n = parseInt(userId, 10);
       if (!Number.isNaN(n)) p.user_id = n;
@@ -52,14 +56,26 @@ export default function AdminSessionsPage() {
     }
     if (status.trim()) p.status = status.trim();
     return p;
-  }, [userId, storyId, status, offset]);
+  }, [userId, storyId, status, offset, pageSize]);
 
   const { data, isLoading } = useAdminSessionsList(listParams);
   const rows = data?.items ?? [];
   const total = data?.total ?? 0;
+  const limit = pageSize;
+  const totalPages = total > 0 ? Math.ceil(total / limit) : 0;
+  const currentPage = total > 0 ? Math.floor(offset / limit) + 1 : 0;
+  const lastPageOffset =
+    totalPages > 0 ? Math.max(0, (totalPages - 1) * limit) : 0;
+  const onFirstPage = total === 0 || currentPage <= 1;
+  const onLastPage = total === 0 || currentPage >= totalPages;
 
-  const [transcriptSession, setTranscriptSession] = useState<AdminSessionListItem | null>(null);
-  const [feedbackSession, setFeedbackSession] = useState<AdminSessionListItem | null>(null);
+  const applyJumpPage = () => {
+    const n = parseInt(jumpPageRaw.trim(), 10);
+    if (Number.isNaN(n) || n < 1 || totalPages < 1) return;
+    const clamped = Math.min(n, totalPages);
+    setOffset((clamped - 1) * limit);
+    setJumpPageRaw(String(clamped));
+  };
 
   return (
     <div className="min-w-[1024px] p-8">
@@ -86,28 +102,78 @@ export default function AdminSessionsPage() {
             placeholder="active…"
           />
         </div>
+        <div>
+          <label className="mb-1 block text-xs text-text-secondary">每页条数</label>
+          <select
+            className="rounded-lg border border-border bg-bg-primary px-2 py-2 text-sm text-text-primary"
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(Number(e.target.value));
+              setOffset(0);
+            }}
+          >
+            {PAGE_SIZE_OPTIONS.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </div>
         <Button variant="secondary" size="sm" onClick={() => setOffset(0)}>
           应用筛选
+        </Button>
+      </div>
+
+      <div className="mb-6 flex flex-wrap items-end gap-3">
+        <Button variant="secondary" size="sm" disabled={onFirstPage} onClick={() => setOffset(0)}>
+          首页
         </Button>
         <Button
           variant="secondary"
           size="sm"
-          disabled={offset <= 0}
-          onClick={() => setOffset((o) => Math.max(0, o - PAGE))}
+          disabled={onFirstPage}
+          onClick={() => setOffset((o) => Math.max(0, o - limit))}
         >
           上一页
         </Button>
         <Button
           variant="secondary"
           size="sm"
-          disabled={offset + PAGE >= total}
-          onClick={() => setOffset((o) => o + PAGE)}
+          disabled={onLastPage}
+          onClick={() => setOffset((o) => o + limit)}
         >
           下一页
         </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={onLastPage}
+          onClick={() => setOffset(lastPageOffset)}
+        >
+          末页
+        </Button>
         <span className="text-xs text-text-secondary">
-          {total ? `${offset + 1}–${Math.min(offset + PAGE, total)} / ${total}` : ""}
+          {total
+            ? `第 ${currentPage} / ${totalPages} 页 · ${offset + 1}–${Math.min(offset + limit, total)} / ${total} 条`
+            : "无数据"}
         </span>
+        <div className="flex items-end gap-2">
+          <div>
+            <label className="mb-1 block text-xs text-text-secondary">跳转页码</label>
+            <Input
+              value={jumpPageRaw}
+              onChange={(e) => setJumpPageRaw(e.target.value)}
+              className="w-20"
+              placeholder="1…"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") applyJumpPage();
+              }}
+            />
+          </div>
+          <Button variant="secondary" size="sm" className="mb-0.5" onClick={() => applyJumpPage()}>
+            跳转
+          </Button>
+        </div>
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-border">
@@ -192,32 +258,42 @@ function TranscriptDialog({
         {isLoading && <p className="text-sm text-text-secondary">加载中…</p>}
         {data && (
           <div className="mt-4 space-y-3">
-            {data.messages.map((m) => (
-              <div
-                key={m.id}
-                className={cn(
-                  "rounded-lg border px-3 py-2 text-sm",
-                  m.role === "assistant"
-                    ? "border-accent-primary/30 bg-bg-secondary/80"
-                    : "border-border bg-bg-hover/40"
-                )}
-              >
-                <div className="mb-1 text-xs font-medium text-text-secondary">
-                  {m.role === "assistant" ? "GM" : "玩家"} · 回合 {m.turn_number} · #{m.id}
+            {data.messages.map((m) => {
+              const meta = m.metadata ?? {};
+              const gmMetaEmpty = m.role === "assistant" && Object.keys(meta).length === 0;
+              return (
+                <div
+                  key={m.id}
+                  className={cn(
+                    "rounded-lg border px-3 py-2 text-sm",
+                    m.role === "assistant"
+                      ? "border-accent-primary/30 bg-bg-secondary/80"
+                      : "border-border bg-bg-hover/40"
+                  )}
+                >
+                  <div className="mb-1 text-xs font-medium text-text-secondary">
+                    {m.role === "assistant" ? "GM" : "玩家"} · 回合 {m.turn_number} · #{m.id}
+                  </div>
+                  <p className="whitespace-pre-wrap text-text-primary">
+                    {m.role === "assistant"
+                      ? stripMetaSuffixForDisplay(m.content, { streaming: false })
+                      : m.content}
+                  </p>
+                  {gmMetaEmpty ? (
+                    <p className="mt-2 text-xs text-text-secondary">
+                      无结构化 metadata（常见于历史数据、手工改库或非当前引擎路径写入）。玩家端与同会话 ID 的
+                      GET /api/sessions/…/messages 中该条应一致。
+                    </p>
+                  ) : null}
+                  <details className="mt-2 text-xs">
+                    <summary className="cursor-pointer text-text-secondary">metadata JSON</summary>
+                    <pre className="mt-1 max-h-32 overflow-auto rounded bg-bg-primary p-2 font-mono text-[10px]">
+                      {JSON.stringify(meta, null, 2)}
+                    </pre>
+                  </details>
                 </div>
-                <p className="whitespace-pre-wrap text-text-primary">
-                  {m.role === "assistant"
-                    ? stripMetaSuffixForDisplay(m.content, { streaming: false })
-                    : m.content}
-                </p>
-                <details className="mt-2 text-xs">
-                  <summary className="cursor-pointer text-text-secondary">metadata JSON</summary>
-                  <pre className="mt-1 max-h-32 overflow-auto rounded bg-bg-primary p-2 font-mono text-[10px]">
-                    {JSON.stringify(m.metadata ?? {}, null, 2)}
-                  </pre>
-                </details>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </DialogContent>

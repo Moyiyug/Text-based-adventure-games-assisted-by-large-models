@@ -1,5 +1,5 @@
 import axios from "axios";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2 } from "lucide-react";
@@ -350,6 +350,11 @@ export default function PlaySessionPage() {
   const mode = session?.mode ?? "strict";
   const inputLocked = streaming || archived;
 
+  const streamingAssistantCharCount = useMemo(() => {
+    const a = messages.find((m) => m.role === "assistant" && m.streaming);
+    return a ? (a.content ?? "").length : 0;
+  }, [messages]);
+
   return (
     <div className="mx-auto flex h-[calc(100vh-3.5rem)] min-w-[1024px] max-w-[1200px] flex-col overflow-hidden px-8 py-6">
       <header className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
@@ -432,6 +437,8 @@ export default function PlaySessionPage() {
             <ChoicePanel
               choices={choices}
               disabled={inputLocked}
+              streaming={streaming}
+              streamingNarrativeCharCount={streamingAssistantCharCount}
               freeInputMode={freeInputMode}
               onToggleFreeInput={setFreeInputMode}
               onSelectChoice={(text) => void sendUserContent(text)}

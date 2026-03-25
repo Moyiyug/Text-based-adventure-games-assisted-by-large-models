@@ -74,8 +74,20 @@ export default function AdminEvalPage() {
     return p;
   }, [listSv, listStatus, listOffset]);
 
-  const { data: runsData, isLoading: runsLoading } = useEvalRunsList(listParams);
-  const { data: resultsData } = useEvalResults(selectedRunId);
+  const {
+    data: runsData,
+    isLoading: runsLoading,
+    isError: runsListError,
+    error: runsListErr,
+    refetch: refetchRunsList,
+  } = useEvalRunsList(listParams);
+  const {
+    data: resultsData,
+    isError: resultsError,
+    error: resultsErr,
+    refetch: refetchResults,
+    isPending: resultsPending,
+  } = useEvalResults(selectedRunId);
   const { data: pollRun } = useEvalRun(pollingRunId);
 
   const startMut = useStartEvalRun();
@@ -393,6 +405,9 @@ export default function AdminEvalPage() {
           <span className="text-xs text-text-secondary">
             {totalRuns ? `${listOffset + 1}–${Math.min(listOffset + listLimit, totalRuns)} / ${totalRuns}` : ""}
           </span>
+          <Button variant="secondary" size="sm" onClick={() => void refetchRunsList()}>
+            刷新列表
+          </Button>
         </div>
 
         <div className="overflow-x-auto rounded-xl border border-border">
@@ -406,19 +421,42 @@ export default function AdminEvalPage() {
                 <TableHead>题数</TableHead>
                 <TableHead>忠实性</TableHead>
                 <TableHead>叙事</TableHead>
+                <TableHead>选项忠实</TableHead>
                 <TableHead>创建</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {runsLoading ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-text-secondary">
+                  <TableCell colSpan={9} className="text-text-secondary">
                     加载中…
+                  </TableCell>
+                </TableRow>
+              ) : runsListError ? (
+                <TableRow>
+                  <TableCell colSpan={9} className="align-top">
+                    <p className="text-sm text-danger">
+                      评测列表加载失败（常见于数据库未执行迁移或后端 500）。请在{" "}
+                      <code className="rounded bg-bg-primary px-1 font-mono text-xs">RAG/backend</code>{" "}
+                      运行 <code className="rounded bg-bg-primary px-1 font-mono text-xs">alembic upgrade head</code>{" "}
+                      后重试，并查看后端日志。
+                    </p>
+                    {runsListErr instanceof Error ? (
+                      <p className="mt-2 font-mono text-xs text-text-secondary">{runsListErr.message}</p>
+                    ) : null}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="mt-3"
+                      onClick={() => void refetchRunsList()}
+                    >
+                      重试
+                    </Button>
                   </TableCell>
                 </TableRow>
               ) : runs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-text-secondary">
+                  <TableCell colSpan={9} className="text-text-secondary">
                     暂无数据
                   </TableCell>
                 </TableRow>
@@ -439,6 +477,7 @@ export default function AdminEvalPage() {
                     <TableCell className="text-xs">{r.total_cases}</TableCell>
                     <TableCell className="text-xs">{scoreCell(r.avg_faithfulness)}</TableCell>
                     <TableCell className="text-xs">{scoreCell(r.avg_story_quality)}</TableCell>
+                    <TableCell className="text-xs">{scoreCell(r.avg_choices_grounding)}</TableCell>
                     <TableCell className="text-xs">{formatDt(r.created_at)}</TableCell>
                   </TableRow>
                 ))
@@ -455,6 +494,20 @@ export default function AdminEvalPage() {
         </h2>
         {!selectedRunId ? (
           <p className="mt-2 text-sm text-text-secondary">在上方列表中点击一行以加载结果</p>
+        ) : resultsError ? (
+          <div className="mt-2 space-y-2">
+            <p className="text-sm text-danger">
+              运行结果加载失败，请检查网络或后端日志；若列表曾报迁移相关错误，请先完成数据库升级。
+            </p>
+            {resultsErr instanceof Error ? (
+              <p className="font-mono text-xs text-text-secondary">{resultsErr.message}</p>
+            ) : null}
+            <Button variant="secondary" size="sm" onClick={() => void refetchResults()}>
+              重试
+            </Button>
+          </div>
+        ) : resultsPending ? (
+          <p className="mt-2 text-sm text-text-secondary">加载中…</p>
         ) : !resultsData?.items.length ? (
           <p className="mt-2 text-sm text-text-secondary">暂无结果（可能仍在运行或失败）</p>
         ) : (
@@ -495,6 +548,7 @@ function CompareCard({
         <li>题数：{run.total_cases}</li>
         <li>忠实性均分：{scoreCell(run.avg_faithfulness)}</li>
         <li>叙事均分：{scoreCell(run.avg_story_quality)}</li>
+        <li>选项忠实均分：{scoreCell(run.avg_choices_grounding)}</li>
         {run.error_message ? <li className="text-danger">{run.error_message}</li> : null}
       </ul>
     </div>
@@ -522,7 +576,8 @@ function ResultExpandBlock({
         <span className="font-mono text-xs text-text-secondary">#{row.id}</span>
         <span className="truncate">{q}</span>
         <span className="ml-auto shrink-0 text-xs text-text-secondary">
-          F {scoreCell(row.faithfulness_score)} / Q {scoreCell(row.story_quality_score)}
+          F {scoreCell(row.faithfulness_score)} / Q {scoreCell(row.story_quality_score)} / G{" "}
+          {scoreCell(row.choices_grounding_score)}
         </span>
       </button>
       {open && (

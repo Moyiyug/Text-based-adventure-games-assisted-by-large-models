@@ -1,6 +1,6 @@
 import { Toaster } from "react-hot-toast";
 
-/** 全局 Toast：与 .admin / 默认主题下的文字对比度协调 */
+/** 全局 Toast：继承 :root 语义色，与游玩/管理页对比度一致 */
 export function AppToaster() {
   return (
     <Toaster

@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     # 为 True 时：在生成用 system 消息末尾追加一句「略短叙事」软提示（非硬截断，见 prompts.build_generation_prompt）。
     NARRATIVE_CONCISE_MODE: bool = True
 
+    # --- Choice grounding (Phase 9)：合并原 strict refine 与事实对齐；与 NARRATIVE_STRICT_CHOICE_REFINE 互斥（回合 SSE 路径）。---
+    NARRATIVE_CHOICE_GROUNDING_ENABLED: bool = True
+    # 每轮一次 DeepSeek 调用计 1；含 grounding_ok 判定与定稿选项，至多如此次数。
+    NARRATIVE_CHOICE_GROUNDING_MAX_ATTEMPTS: int = 2
+    NARRATIVE_CHOICE_GROUNDING_EVIDENCE_CHARS: int = 2500
+    NARRATIVE_CHOICE_GROUNDING_NARRATIVE_CHARS: int = 3500
+
     # --- Profile inference (Phase 5) ---
     # false 时不调用 DeepSeek 推断画像（开发省成本）。
     PROFILE_INFERENCE_ENABLED: bool = False

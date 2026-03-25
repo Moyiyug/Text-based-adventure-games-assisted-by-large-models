@@ -1,9 +1,14 @@
+import { choicePanelStreamHint } from "../../lib/choicePanelPlaceholder";
 import { formatPlainChoiceLabel } from "../../lib/narrativeDisplay";
 import { cn } from "../../lib/utils";
 
 interface ChoicePanelProps {
   choices: string[];
   disabled?: boolean;
+  /** 流式回合中、选项质检定稿前：与 disabled 同时为 true 时展示占位（见 FRONTEND_GUIDELINES §6.3） */
+  streaming?: boolean;
+  /** 当前流式 assistant 气泡正文长度，用于区分「叙事生成中」与「生成选项…」 */
+  streamingNarrativeCharCount?: number;
   freeInputMode: boolean;
   onToggleFreeInput: (free: boolean) => void;
   onSelectChoice: (text: string) => void;
@@ -12,10 +17,18 @@ interface ChoicePanelProps {
 export function ChoicePanel({
   choices,
   disabled,
+  streaming = false,
+  streamingNarrativeCharCount = 0,
   freeInputMode,
   onToggleFreeInput,
   onSelectChoice,
 }: ChoicePanelProps) {
+  const streamPhase =
+    disabled && streaming && choices.length === 0
+      ? choicePanelStreamHint(streaming, streamingNarrativeCharCount)
+      : null;
+  const showChoicePulse = streamPhase === "awaiting_choices";
+
   return (
     <div className="shrink-0 space-y-3 border-t border-border bg-bg-primary/80 px-4 py-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -63,9 +76,27 @@ export function ChoicePanel({
       )}
 
       {!freeInputMode && choices.length === 0 && (
-        <p className="font-ui text-sm italic text-text-secondary">
-          暂无选项，可切换为自由输入。
-        </p>
+        <div className="space-y-2">
+          {streamPhase === "narrative" && (
+            <p className="font-ui text-sm italic text-text-muted">叙事生成中…</p>
+          )}
+          {streamPhase === "awaiting_choices" && (
+            <>
+              <p className="font-ui text-sm italic text-text-muted">生成选项…</p>
+              {showChoicePulse && (
+                <div className="flex max-w-md flex-wrap gap-2" aria-hidden>
+                  <div className="h-9 min-w-[140px] flex-1 basis-[160px] rounded-xl bg-bg-secondary animate-pulse" />
+                  <div className="h-9 min-w-[140px] flex-1 basis-[160px] rounded-xl bg-bg-secondary animate-pulse" />
+                </div>
+              )}
+            </>
+          )}
+          {!streamPhase && (
+            <p className="font-ui text-sm italic text-text-secondary">
+              暂无选项，可切换为自由输入。
+            </p>
+          )}
+        </div>
       )}
     </div>
   );

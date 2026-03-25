@@ -20,6 +20,7 @@ export interface EvalRunOut {
   total_cases: number;
   avg_faithfulness: number | null;
   avg_story_quality: number | null;
+  avg_choices_grounding: number | null;
   error_message: string | null;
   started_at: string | null;
   completed_at: string | null;
@@ -50,6 +51,7 @@ export interface EvalResultOut {
   structured_facts_used: unknown[];
   faithfulness_score: number | null;
   story_quality_score: number | null;
+  choices_grounding_score: number | null;
   judge_reasoning: string | null;
   created_at: string;
   case: EvalCaseBrief | null;

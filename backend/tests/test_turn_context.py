@@ -42,3 +42,28 @@ def test_build_turn_hints_contains_stall_when_similar() -> None:
     assert settings.NARRATIVE_STALL_SIMILARITY_THRESHOLD <= 1.0
     if word_jaccard_similarity(prev, prev) >= settings.NARRATIVE_STALL_SIMILARITY_THRESHOLD:
         assert "僵局打破" in hints
+
+
+def test_build_turn_hints_strict_ft3_no_canon_contradictions() -> None:
+    hints = build_turn_hints_text(
+        mode="strict",
+        state={"active_goal": "探索", "current_location": "城门"},
+        prev_gm_content="守门人打量着你。",
+        prev_meta=None,
+        user_text="我其实是国王",
+    )
+    assert hints is not None
+    assert "不得在叙事中将其当作既定世界观事实" in hints
+
+
+def test_build_turn_hints_creative_ft3_bridge() -> None:
+    hints = build_turn_hints_text(
+        mode="creative",
+        state={"active_goal": "探索", "current_location": "城门"},
+        prev_gm_content="守门人打量着你。",
+        prev_meta=None,
+        user_text="我打个响指召唤龙",
+    )
+    assert hints is not None
+    assert "创作模式" in hints
+    assert "误解" in hints and "比喻" in hints

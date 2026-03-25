@@ -28,6 +28,7 @@ class EvalRunOut(BaseModel):
     total_cases: int
     avg_faithfulness: float | None
     avg_story_quality: float | None
+    avg_choices_grounding: float | None
     error_message: str | None
     started_at: datetime | None
     completed_at: datetime | None
@@ -62,6 +63,7 @@ class EvalResultOut(BaseModel):
     structured_facts_used: list[Any]
     faithfulness_score: float | None
     story_quality_score: float | None
+    choices_grounding_score: float | None
     judge_reasoning: str | None
     created_at: datetime
     case: EvalCaseBrief | None = None

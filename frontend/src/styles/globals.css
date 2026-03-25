@@ -1,9 +1,9 @@
 @import "tailwindcss";
 
 /* ============================================
-   语义色（:root / 管理路由）→ Tailwind 通过 @theme 引用 var()
-   这样 .admin 与 body.admin-route 下所有工具类（含 Portal）一致浅色
-   参照 FRONTEND_GUIDELINES.md §2.1 / §2.2、RULES.md
+   语义色仅在 :root（游玩与管理共用暗色）→ Tailwind @theme 引用 var()
+   Radix Portal 挂在 body 下，继承同一套变量，无需按路由覆写 html/body
+   参照 FRONTEND_GUIDELINES.md §2.1、RULES.md
    ============================================ */
 
 :root {
@@ -13,6 +13,8 @@
   --bg-hover: #252540;
   --text-primary: #e8e0d4;
   --text-secondary: #9a9ab0;
+  /* 比 secondary 更弱一档：定稿前占位、辅助说明（§6.3 / F16） */
+  --text-muted: #6d6d82;
   --accent-primary: #d4a853;
   --accent-secondary: #4ade80;
   --danger: #ef4444;
@@ -34,73 +36,60 @@
   --font-stack-ui: "Inter", "Noto Sans SC", "Microsoft YaHei", sans-serif;
   --font-stack-mono: "JetBrains Mono", "Fira Code", "Consolas", monospace;
 
-  /* 游玩页滚动条（play-session-messages-scroll），复用语义色 */
+  /* 主题滚动条：游玩对话列表、管理侧栏导航等，复用语义色 */
   --scrollbar-track: var(--bg-primary);
   --scrollbar-thumb: var(--border);
   --scrollbar-thumb-hover: var(--bg-hover);
+
+  color-scheme: dark;
 
   font-family: var(--font-stack-ui);
   color: var(--text-primary);
   background-color: var(--bg-primary);
 }
 
-/* 管理后台：侧栏内布局 + body 挂类时整页（含 Radix Portal）统一浅色 */
-.admin,
-body.admin-route {
-  --bg-primary: #f8f9fa;
-  --bg-secondary: #ffffff;
-  --bg-hover: #f3f4f6;
-  --text-primary: #1a1a2e;
-  --text-secondary: #6b7280;
-  --accent-primary: #4f46e5;
-  --accent-secondary: #059669;
-  --danger: #dc2626;
-  --warning: #d97706;
-  --success: #059669;
-  --border: #e5e7eb;
-  --gm-text: #4f46e5;
-  --player-text: #1a1a2e;
-  --system-text: #6b7280;
-
-  --scrollbar-track: var(--bg-hover);
-  --scrollbar-thumb: var(--border);
-  --scrollbar-thumb-hover: var(--text-secondary);
-
-  color: var(--text-primary);
-  background-color: var(--bg-primary);
-}
-
-/* 游玩页对话列表：暗色/浅色随 :root 或 admin-route 变量切换 */
-.play-session-messages-scroll {
+/* 主题滚动条：游玩对话、管理侧栏/主内容区等；轨道/滑块继承 :root 的 --scrollbar-* */
+.play-session-messages-scroll,
+.admin-sidebar-nav,
+.themed-scrollbar {
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
-.play-session-messages-scroll::-webkit-scrollbar {
+.play-session-messages-scroll::-webkit-scrollbar,
+.admin-sidebar-nav::-webkit-scrollbar,
+.themed-scrollbar::-webkit-scrollbar {
   width: 8px;
 }
 
-.play-session-messages-scroll::-webkit-scrollbar-track {
+.play-session-messages-scroll::-webkit-scrollbar-track,
+.admin-sidebar-nav::-webkit-scrollbar-track,
+.themed-scrollbar::-webkit-scrollbar-track {
   background: var(--scrollbar-track);
   border-radius: 4px;
 }
 
-.play-session-messages-scroll::-webkit-scrollbar-thumb {
+.play-session-messages-scroll::-webkit-scrollbar-thumb,
+.admin-sidebar-nav::-webkit-scrollbar-thumb,
+.themed-scrollbar::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
   border-radius: 4px;
 }
 
-.play-session-messages-scroll::-webkit-scrollbar-thumb:hover {
+.play-session-messages-scroll::-webkit-scrollbar-thumb:hover,
+.admin-sidebar-nav::-webkit-scrollbar-thumb:hover,
+.themed-scrollbar::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
 }
 
 @theme {
-  /* Tailwind 颜色 → 继承当前作用域语义变量（随 .admin / body.admin-route 切换） */
+  /* Tailwind 颜色 → 继承 :root 语义变量（游玩与管理共用） */
   --color-bg-primary: var(--bg-primary);
   --color-bg-secondary: var(--bg-secondary);
   --color-bg-hover: var(--bg-hover);
   --color-text-primary: var(--text-primary);
   --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
   --color-accent-primary: var(--accent-primary);
   --color-accent-secondary: var(--accent-secondary);
   --color-danger: var(--danger);

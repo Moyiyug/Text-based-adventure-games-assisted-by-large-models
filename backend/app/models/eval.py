@@ -24,6 +24,7 @@ class EvalRun(Base):
     total_cases: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     avg_faithfulness: Mapped[float | None] = mapped_column(Float, nullable=True)
     avg_story_quality: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_choices_grounding: Mapped[float | None] = mapped_column(Float, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -73,6 +74,7 @@ class EvalResult(Base):
     structured_facts_used: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     faithfulness_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     story_quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    choices_grounding_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     judge_reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()

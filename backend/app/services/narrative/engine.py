@@ -16,7 +16,9 @@ from app.core.config import settings
 from app.models.session import Session as NarrativeSession
 from app.models.session import SessionEvent, SessionMessage, SessionState
 from app.services.llm.deepseek import deepseek_chat, deepseek_chat_stream
+from app.services.narrative.choice_dedupe import ensure_at_least_two_choices
 from app.services.narrative.choice_fallback import synthesize_choices_from_context
+from app.services.narrative.choice_grounding import ground_choices_for_turn
 from app.services.narrative.choice_refine import refine_strict_choices
 from app.services.narrative.meta_parse import (
     MetaStreamSplitter,
@@ -112,6 +114,7 @@ async def _maybe_refine_strict_choices(
     choices: list[str],
     beats: list[str] | None,
 ) -> tuple[list[str], list[str] | None, bool]:
+    """回合路径在 ``NARRATIVE_CHOICE_GROUNDING_ENABLED`` 时改走 ``ground_choices_for_turn``，本函数仅作回退/开场等保留。"""
     if mode != "strict" or not settings.NARRATIVE_STRICT_CHOICE_REFINE:
         return choices, beats, False
     if len(choices) < 2:
@@ -126,6 +129,65 @@ async def _maybe_refine_strict_choices(
     if not refined:
         return choices, beats, False
     return refined["choices"], refined["choice_beats"], True
+
+
+async def _apply_choice_grounding_or_refine(
+    *,
+    mode: str,
+    narrative_excerpt: str,
+    state: dict[str, Any],
+    evidence_context: str,
+    choices: list[str],
+    beats: list[str] | None,
+) -> tuple[list[str], list[str] | None, bool, bool, int]:
+    """
+    候选 options：开启 grounding 时走 ``ground_choices_for_turn``，否则 ``_maybe_refine_strict_choices``。
+    返回 (choices, beats, choices_changed_flag, grounding_failed, grounding_attempts)；
+    未走 grounding 时后两项为 (False, 0)。
+    """
+    if settings.NARRATIVE_CHOICE_GROUNDING_ENABLED and len(choices) >= 2:
+        gr = await ground_choices_for_turn(
+            mode=mode,
+            narrative_excerpt=narrative_excerpt,
+            state=state,
+            evidence_context=evidence_context,
+            choices=choices,
+            beats=beats,
+        )
+        return (
+            gr.choices,
+            gr.choice_beats,
+            gr.choices_changed_from_input,
+            gr.grounding_failed,
+            gr.attempts_used,
+        )
+    ch, be, refined = await _maybe_refine_strict_choices(
+        mode=mode,
+        narrative=narrative_excerpt,
+        prev_state=state,
+        context=evidence_context,
+        choices=choices,
+        beats=beats,
+    )
+    return ch, be, refined, False, 0
+
+
+def _merge_grounding_turn_meta(
+    turn_meta: dict[str, Any],
+    *,
+    choices_len: int,
+    choices_grounding_attempts: int,
+    choices_grounding_failed: bool,
+) -> None:
+    """写入与 BACKEND_STRUCTURE §4.4.4 一致的 grounding 键（就地更新）。"""
+    if not settings.NARRATIVE_CHOICE_GROUNDING_ENABLED or choices_len < 2:
+        return
+    if choices_grounding_attempts:
+        turn_meta["choices_grounding_attempts"] = choices_grounding_attempts
+    if choices_grounding_failed:
+        turn_meta["choices_grounding_failed"] = True
+    elif choices_grounding_attempts:
+        turn_meta["choices_grounding_passed"] = True
 
 
 @dataclass
@@ -298,14 +360,33 @@ async def generate_opening(
             choices_source_val = "llm_fallback"
             choice_beats_body = None
 
-    choices_body, choice_beats_body, choices_refined_flag = await _maybe_refine_strict_choices(
+    (
+        choices_body,
+        choice_beats_body,
+        choices_refined_flag,
+        opening_grounding_failed,
+        opening_grounding_attempts,
+    ) = await _apply_choice_grounding_or_refine(
         mode=session.mode,
-        narrative=narrative_body,
-        prev_state=state,
-        context=context,
+        narrative_excerpt=narrative_body,
+        state=state,
+        evidence_context=context,
         choices=choices_body,
         beats=choice_beats_body,
     )
+
+    choices_body, choice_beats_body, source_override, choices_were_deduped = (
+        await ensure_at_least_two_choices(
+            choices=choices_body,
+            beats=choice_beats_body,
+            narrative=narrative_body,
+            user_input="（故事开场，尚无玩家上一句行动。）",
+            assembled_context=context,
+            templates=templates,
+        )
+    )
+    if source_override is not None:
+        choices_source_val = source_override
 
     new_turn = max(1, session.turn_count + 1)
 
@@ -333,6 +414,16 @@ async def generate_opening(
         opening_meta["choice_beats"] = choice_beats_body
     if choices_refined_flag:
         opening_meta["choices_refined"] = True
+    if choices_were_deduped:
+        opening_meta["choices_deduplicated"] = True
+    if source_override in ("llm_fallback", "placeholder_fallback"):
+        opening_meta["choices_min_enforced"] = True
+    _merge_grounding_turn_meta(
+        opening_meta,
+        choices_len=len(choices_body),
+        choices_grounding_attempts=opening_grounding_attempts,
+        choices_grounding_failed=opening_grounding_failed,
+    )
     db.add(
         SessionMessage(
             session_id=session.id,
@@ -576,14 +667,34 @@ async def process_turn_sse(
     if choices_source_val in ("narrative_regex", "llm_fallback"):
         choice_beats_val = None
 
-    choices, choice_beats_val, choices_refined_flag = await _maybe_refine_strict_choices(
+    (
+        choices,
+        choice_beats_val,
+        choices_refined_flag,
+        choices_grounding_failed,
+        choices_grounding_attempts,
+    ) = await _apply_choice_grounding_or_refine(
         mode=session.mode,
-        narrative=narrative_for_db,
-        prev_state=state,
-        context=context,
+        narrative_excerpt=narrative_for_db,
+        state=state,
+        evidence_context=context,
         choices=choices,
         beats=choice_beats_val,
     )
+
+    choices, choice_beats_val, turn_source_override, turn_choices_deduped = (
+        await ensure_at_least_two_choices(
+            choices=choices,
+            beats=choice_beats_val,
+            narrative=narrative_for_db,
+            user_input=text,
+            assembled_context=context,
+            templates=templates,
+        )
+    )
+    if turn_source_override is not None:
+        choices_source_val = turn_source_override
+
     su = parsed.state_update if not parsed.parse_error else {}
     validated = validate_state_update(state, su)
 
@@ -600,6 +711,16 @@ async def process_turn_sse(
             turn_meta["choice_beats"] = choice_beats_val
         if choices_refined_flag:
             turn_meta["choices_refined"] = True
+        if turn_choices_deduped:
+            turn_meta["choices_deduplicated"] = True
+        if turn_source_override in ("llm_fallback", "placeholder_fallback"):
+            turn_meta["choices_min_enforced"] = True
+        _merge_grounding_turn_meta(
+            turn_meta,
+            choices_len=len(choices),
+            choices_grounding_attempts=choices_grounding_attempts,
+            choices_grounding_failed=choices_grounding_failed,
+        )
         db.add(
             SessionMessage(
                 session_id=session.id,
@@ -632,4 +753,6 @@ async def process_turn_sse(
     yield _sse_line({"type": "state_update", "state": validated})
     if parsed.parse_error:
         yield _sse_line({"type": "error", "message": parsed.parse_error})
+    yield _sse_line({"type": "done"})
+
     yield _sse_line({"type": "done"})

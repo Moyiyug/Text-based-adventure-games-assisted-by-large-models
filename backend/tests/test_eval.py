@@ -19,7 +19,7 @@ from app.models.session import Session as NarrativeSession
 from app.models.session import SessionMessage
 from app.models.story import Story, StoryVersion
 from app.models.user import User
-from app.services.eval import run_evaluation_job
+from app.services.eval import SESSION_TURN, run_evaluation_job
 from app.services.rag.base import RetrievalResult
 
 
@@ -209,7 +209,10 @@ def test_run_evaluation_job_with_mocks() -> None:
                 patch(
                     "app.services.eval.deepseek_chat",
                     new_callable=AsyncMock,
-                    side_effect=["模型回答示例", '{"faithfulness_score":0.8,"story_quality_score":0.7,"judge_reasoning":"ok"}'],
+                    side_effect=[
+                        "模型回答示例",
+                        '{"faithfulness_score":0.8,"story_quality_score":0.7,"choices_grounding_score":null,"judge_reasoning":"ok"}',
+                    ],
                 ),
             ):
                 await run_evaluation_job(1, [1])
@@ -225,6 +228,100 @@ def test_run_evaluation_job_with_mocks() -> None:
             assert len(rows) == 1
             assert rows[0].faithfulness_score == 0.8
             assert rows[0].story_quality_score == 0.7
+            assert rows[0].choices_grounding_score is None
+            assert run.avg_choices_grounding is None
+
+    try:
+        asyncio.run(_run())
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_run_evaluation_job_session_turn_with_choices_grounding() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+
+    async def _run() -> None:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with SessionLocal() as s:
+            s.add(
+                User(
+                    username="st",
+                    password_hash=hash_password("pw12345678"),
+                    display_name="S",
+                    role="admin",
+                )
+            )
+            s.add(RagConfig(name="r3", variant_type="naive_hybrid", config={}, is_active=True))
+            s.add(Story(title="St3", description=None, status="ready"))
+            await s.flush()
+            s.add(
+                StoryVersion(
+                    story_id=1,
+                    version_number=1,
+                    is_active=True,
+                    is_backup=False,
+                    is_archived=False,
+                )
+            )
+            await s.flush()
+            s.add(
+                EvalCase(
+                    story_version_id=1,
+                    case_type=SESSION_TURN,
+                    question="玩家说了什么",
+                    evidence_spans=[
+                        {"kind": "gm_output", "text": "GM 回复正文"},
+                        {"kind": "session_choices", "items": ["向左", "向右"]},
+                    ],
+                    rubric="会话回放",
+                )
+            )
+            s.add(
+                EvalRun(
+                    rag_config_id=1,
+                    story_version_id=1,
+                    status="pending",
+                    total_cases=0,
+                )
+            )
+            await s.commit()
+
+        from app.core import database as dbmod
+
+        orig = dbmod.async_session_factory
+        dbmod.async_session_factory = SessionLocal
+        judge_json = (
+            '{"faithfulness_score":0.55,"story_quality_score":0.6,'
+            '"choices_grounding_score":0.85,"judge_reasoning":"选项可支持"}'
+        )
+        try:
+            with (
+                patch(
+                    "app.services.eval.dispatch_retrieve",
+                    new_callable=AsyncMock,
+                    return_value=RetrievalResult(chunks=[], structured=[], variant_type="naive_hybrid"),
+                ),
+                patch(
+                    "app.services.eval.deepseek_chat",
+                    new_callable=AsyncMock,
+                    side_effect=[judge_json],
+                ),
+            ):
+                await run_evaluation_job(1, [1])
+        finally:
+            dbmod.async_session_factory = orig
+
+        async with SessionLocal() as s2:
+            run = await s2.get(EvalRun, 1)
+            assert run is not None
+            assert run.status == "completed"
+            res = await s2.execute(select(EvalResult).where(EvalResult.eval_run_id == 1))
+            rows = list(res.scalars().all())
+            assert len(rows) == 1
+            assert rows[0].choices_grounding_score == 0.85
+            assert run.avg_choices_grounding == 0.85
 
     try:
         asyncio.run(_run())

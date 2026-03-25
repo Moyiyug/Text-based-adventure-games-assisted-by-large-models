@@ -75,11 +75,19 @@ export default function AdminPromptsPage() {
   return (
     <div className="min-w-[1024px] p-8">
       <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
-        <div>
+        <div className="max-w-3xl">
           <h1 className="font-story text-2xl font-bold text-text-primary">提示词编辑</h1>
           <p className="mt-1 text-sm text-text-secondary">
-            按 layer × mode 分组；展开后编辑正文并保存（可选递增版本号）
+            维护服务端提示词模板库；叙事引擎在生成时会按 <strong className="font-medium text-text-primary">layer</strong>{" "}
+            把各段模板拼进最终发给模型的提示中，并按玩家所选模式匹配{" "}
+            <strong className="font-medium text-text-primary">applicable_mode</strong>（见下方 Tab）。
           </p>
+          <ol className="mt-3 list-inside list-decimal space-y-1 text-xs text-text-secondary">
+            <li>列表数据来自管理接口分组结果；先展开左侧某一 <span className="font-mono">Layer</span>，再在 Tab 中选模式桶。</li>
+            <li>在卡片大文本框中修改模板正文，点「保存」写回服务端；勾选「保存并递增版本号」等价于带上 <span className="font-mono">bump_version</span>，便于留版本痕迹。</li>
+            <li>修改在<strong className="text-text-primary">后续新开局或下一轮调用</strong>时生效，已进行中的会话不会自动改写历史轮次。</li>
+            <li>需要新增一条独立模板（新名称 / 新 layer / 新模式组合）时用右上角「新建模板」。</li>
+          </ol>
         </div>
         <Button variant="secondary" onClick={() => setCreateOpen(true)}>
           <Plus className="mr-1 inline h-4 w-4" />
@@ -90,14 +98,32 @@ export default function AdminPromptsPage() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="max-w-lg">
           <DialogTitle>新建提示词模板</DialogTitle>
-          <DialogDescription>layer 须与管线一致（如 system / retrieval / gm / style）</DialogDescription>
+          <DialogDescription asChild>
+            <div className="space-y-2 text-sm text-text-secondary">
+              <p>与后端创建接口字段一致。请与现有管线约定对齐，随意填写可能导致该模板永不参与拼装。</p>
+              <ul className="list-inside list-disc space-y-1 text-xs">
+                <li>
+                  <span className="font-mono">layer</span>：逻辑分层名，须与引擎/灌库一致（常见如{" "}
+                  <span className="font-mono">system</span>、<span className="font-mono">retrieval</span>、
+                  <span className="font-mono">gm</span>、<span className="font-mono">style</span> 等，以项目实际为准）。
+                </li>
+                <li>
+                  <span className="font-mono">applicable_mode</span>：<span className="font-mono">all</span> 表示任意玩家模式均可用；{" "}
+                  <span className="font-mono">strict</span> / <span className="font-mono">creative</span> 与故事库开局的模式对应。
+                </li>
+                <li>
+                  <span className="font-mono">template_text</span>：完整模板正文；创建后默认为启用，可在列表中继续编辑。
+                </li>
+              </ul>
+            </div>
+          </DialogDescription>
           <div className="mt-4 space-y-3">
             <div>
-              <label className="mb-1 block text-xs text-text-secondary">名称</label>
+              <label className="mb-1 block text-xs text-text-secondary">名称（展示用，便于区分多条）</label>
               <Input value={newName} onChange={(e) => setNewName(e.target.value)} />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-text-secondary">layer</label>
+              <label className="mb-1 block text-xs text-text-secondary">layer（须与管线一致）</label>
               <Input value={newLayer} onChange={(e) => setNewLayer(e.target.value)} />
             </div>
             <div>
@@ -105,7 +131,7 @@ export default function AdminPromptsPage() {
               <Input value={newMode} onChange={(e) => setNewMode(e.target.value)} placeholder="all / strict / creative" />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-text-secondary">template_text</label>
+              <label className="mb-1 block text-xs text-text-secondary">template_text（模板正文）</label>
               <textarea
                 className={textareaClass}
                 value={newText}
@@ -171,6 +197,10 @@ function LayerSection({
       </button>
       {open && (
         <div className="border-t border-border px-4 pb-4 pt-2">
+          <p className="mb-3 text-xs text-text-secondary">
+            <span className="font-mono">Layer</span> 表示叙事管线中的一段逻辑分层；本页列表来自后端当前库，具体层名以{" "}
+            <span className="font-mono">{layer}</span> 为准。同一 Layer 下再按适用模式分桶。
+          </p>
           {modeKeys.length === 0 ? (
             <p className="text-sm text-text-secondary">无模板</p>
           ) : (
@@ -182,6 +212,11 @@ function LayerSection({
                   </TabsTrigger>
                 ))}
               </TabsList>
+              <p className="mb-3 mt-2 text-xs text-text-secondary">
+                Tab 标签即 <span className="font-mono">applicable_mode</span>：<span className="font-mono">all</span>{" "}
+                为全模式通用；<span className="font-mono">strict</span> / <span className="font-mono">creative</span>{" "}
+                分别对应玩家在故事库开局选择的严谨 / 创意模式，仅匹配时参与拼装。
+              </p>
               {modeKeys.map((m) => (
                 <TabsContent key={m} value={m} className="space-y-4">
                   {(modes[m] ?? []).map((t) => (
@@ -242,6 +277,9 @@ function PromptEditorCard({
           保存
         </Button>
       </div>
+      <p className="mt-2 text-xs text-text-secondary">
+        不勾选时：覆盖当前版本正文，版本号不变。勾选时：正文保存同时版本号 +1，便于区分迭代（回滚需在后端/库侧操作）。
+      </p>
     </div>
   );
 }
