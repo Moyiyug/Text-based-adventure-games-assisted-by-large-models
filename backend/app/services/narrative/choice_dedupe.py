@@ -61,6 +61,7 @@ async def ensure_at_least_two_choices(
     assembled_context: str | None = None,
     templates: dict[str, str] | None = None,
     timing_synthesize_ms: list[int] | None = None,
+    timeline_arc_hint: str | None = None,
 ) -> tuple[list[str], list[str] | None, str | None, bool]:
     """
     去重 → 不足 2 条则强制 synthesize（带检索节选）→ 仍不足则用占位。
@@ -84,6 +85,7 @@ async def ensure_at_least_two_choices(
         narrative=narrative,
         assembled_context=assembled_context,
         templates=templates,
+        timeline_arc_hint=timeline_arc_hint,
     )
     if timing_synthesize_ms is not None:
         timing_synthesize_ms.append(int(round((time.perf_counter() - t_syn) * 1000)))

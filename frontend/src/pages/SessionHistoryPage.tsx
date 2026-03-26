@@ -96,6 +96,10 @@ export default function SessionHistoryPage() {
 
   const handleContinue = async (s: SessionListItem) => {
     try {
+      if (s.narrative_status === "completed") {
+        navigate(`/history/${s.id}`);
+        return;
+      }
       if (s.status === "archived") {
         setResumingId(s.id);
         await resumeSession(s.id);
@@ -148,6 +152,7 @@ export default function SessionHistoryPage() {
             {filtered.map((s) => {
               const title = titleByStoryId.get(s.story_id) ?? `作品 #${s.story_id}`;
               const active = s.status === "active";
+              const arcDone = s.narrative_status === "completed";
               return (
                 <li
                   key={s.id}
@@ -161,11 +166,11 @@ export default function SessionHistoryPage() {
                         </h2>
                         <ModeBadge mode={s.mode} />
                         <Badge variant={active ? "success" : "muted"}>
-                          {active ? "进行中" : "已归档"}
+                          {arcDone ? "已完成" : active ? "进行中" : "已归档"}
                         </Badge>
                       </div>
                       <p className="text-sm text-text-secondary">
-                        目标：{truncate(s.opening_goal, 120)}
+                        介入意图：{truncate(s.opening_goal, 120)}
                       </p>
                         <p className="font-ui text-xs text-text-secondary">
                           轮数 {s.turn_count} · 创建 {formatWhen(s.created_at)}
@@ -175,22 +180,35 @@ export default function SessionHistoryPage() {
                         </p>
                     </div>
                     <div className="flex shrink-0 flex-wrap gap-2">
-                      <Button
-                        size="sm"
-                        variant={active ? "primary" : "secondary"}
-                        isLoading={resumingId === s.id}
-                        onClick={() => void handleContinue(s)}
-                      >
-                        {active ? "继续游玩" : "恢复并继续"}
-                      </Button>
-                      <Link
-                        to={`/history/${s.id}`}
-                        className={cn(
-                          "inline-flex h-9 items-center justify-center rounded-lg border border-border px-4 text-sm font-medium text-text-primary transition-colors hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/20"
-                        )}
-                      >
-                        查看回看
-                      </Link>
+                      {arcDone ? (
+                        <Link
+                          to={`/history/${s.id}`}
+                          className={cn(
+                            "inline-flex h-9 items-center justify-center rounded-lg bg-accent-primary px-4 text-sm font-medium text-white transition-colors hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/20"
+                          )}
+                        >
+                          查看回看
+                        </Link>
+                      ) : (
+                        <>
+                          <Button
+                            size="sm"
+                            variant={active ? "primary" : "secondary"}
+                            isLoading={resumingId === s.id}
+                            onClick={() => void handleContinue(s)}
+                          >
+                            {active ? "继续游玩" : "恢复并继续"}
+                          </Button>
+                          <Link
+                            to={`/history/${s.id}`}
+                            className={cn(
+                              "inline-flex h-9 items-center justify-center rounded-lg border border-border px-4 text-sm font-medium text-text-primary transition-colors hover:bg-bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/20"
+                            )}
+                          >
+                            查看回看
+                          </Link>
+                        </>
+                      )}
                       <Button
                         size="sm"
                         variant="ghost"

@@ -99,6 +99,7 @@ export default function SessionReplayPage() {
 
   const archived = session?.status === "archived";
   const active = session?.status === "active";
+  const storyLineComplete = session?.narrative_status === "completed";
 
   if (!Number.isFinite(sessionId)) {
     return (
@@ -130,13 +131,16 @@ export default function SessionReplayPage() {
           </h1>
           {session && <ModeBadge mode={session.mode} />}
         </div>
-        <div className="flex flex-wrap gap-2">
-          {active && (
+        <div className="flex flex-wrap items-center gap-2">
+          {storyLineComplete && (
+            <span className="font-ui text-xs text-text-secondary">故事线已完成 · 仅回看</span>
+          )}
+          {active && !storyLineComplete && (
             <Button size="sm" onClick={() => navigate(`/sessions/${sessionId}`)}>
               继续游玩
             </Button>
           )}
-          {archived && (
+          {archived && !storyLineComplete && (
             <Button
               size="sm"
               variant="primary"
@@ -179,17 +183,22 @@ export default function SessionReplayPage() {
             ))}
           </div>
           <div className="flex max-h-[calc(100vh-14rem)] min-h-0 shrink-0 self-stretch border-l border-border">
-            <StatePanel state={panelState} highlightKeys={[]} />
+            <StatePanel
+              state={panelState}
+              highlightKeys={[]}
+              narrativeStatus={session.narrative_status}
+              narrativePlan={session.narrative_plan}
+            />
           </div>
         </div>
       )}
 
       {!loading && session && messages && (
         <div className="mt-4 flex flex-wrap justify-center gap-2 border-t border-border pt-4">
-          {active && (
+          {active && !storyLineComplete && (
             <Button onClick={() => navigate(`/sessions/${sessionId}`)}>继续游玩</Button>
           )}
-          {archived && (
+          {archived && !storyLineComplete && (
             <Button
               variant="primary"
               isLoading={resumeMut.isPending}
@@ -197,6 +206,11 @@ export default function SessionReplayPage() {
             >
               恢复并继续
             </Button>
+          )}
+          {storyLineComplete && (
+            <span className="self-center font-ui text-sm text-text-secondary">
+              本会话故事线已结束，不提供继续游玩或恢复推进。
+            </span>
           )}
         </div>
       )}

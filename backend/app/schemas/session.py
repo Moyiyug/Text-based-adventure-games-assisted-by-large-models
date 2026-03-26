@@ -58,6 +58,8 @@ class SessionResponse(BaseModel):
     rag_config_id: int
     mode: str
     opening_goal: str
+    narrative_status: str = "opening_pending"
+    narrative_plan: dict[str, Any] = Field(default_factory=dict)
     style_config: dict[str, Any]
     status: str
     turn_count: int
@@ -75,6 +77,8 @@ class SessionListItem(BaseModel):
     rag_config_id: int
     mode: str
     status: str
+    narrative_status: str = "opening_pending"
+    narrative_plan: dict[str, Any] = Field(default_factory=dict)
     turn_count: int
     opening_goal: str
     created_at: datetime | None = None

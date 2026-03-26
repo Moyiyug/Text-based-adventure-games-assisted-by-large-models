@@ -15,6 +15,7 @@ _SYSTEM = (
     "输出**单行 JSON 对象**，键为 choices（字符串数组）与 choice_beats（字符串数组），"
     "二者必须等长、2～4 项；choice_beats 每项为 1～2 句第三人称大纲，对应若玩家选该项时下一段核心转折。"
     "选项须具体可执行、彼此区分，并与证据摘要一致；禁止两条仅措辞不同或去空白后实质相同；禁止 Markdown。"
+    "若 user JSON 含 timeline_arc_constraints，精炼时须一并服从其中时间线与弧线上界。"
 )
 
 
@@ -54,17 +55,21 @@ async def refine_strict_choices(
     evidence_excerpt: str,
     current_choices: list[str],
     current_beats: list[str] | None,
+    timeline_arc_constraints: str | None = None,
     temperature: float = 0.2,
     timeout: float = 90.0,
 ) -> dict[str, list[str]] | None:
     beats_in = current_beats or []
-    payload = {
+    payload: dict[str, object] = {
         "narrative_excerpt": narrative_excerpt[-3500:],
         "state_json": state_json[:2000],
         "evidence_excerpt": evidence_excerpt[-2500:],
         "current_choices": current_choices,
         "current_choice_beats": beats_in,
     }
+    tac = (timeline_arc_constraints or "").strip()
+    if tac:
+        payload["timeline_arc_constraints"] = tac
     human = (
         "请精炼下列 JSON 中的选项与大纲（可改写以更符合证据与推进），只输出一行 JSON 对象：\n"
         + json.dumps(payload, ensure_ascii=False)

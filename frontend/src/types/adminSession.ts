@@ -12,6 +12,8 @@ export interface AdminSessionListItem {
   rag_config_id: number;
   mode: string;
   status: string;
+  narrative_status: string;
+  narrative_plan: Record<string, unknown>;
   turn_count: number;
   opening_goal: string;
   created_at?: string | null;
@@ -31,6 +33,8 @@ export interface TranscriptSessionMeta {
   rag_config_id: number;
   mode: string;
   status: string;
+  narrative_status: string;
+  narrative_plan: Record<string, unknown>;
   turn_count: number;
   opening_goal: string;
 }

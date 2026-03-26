@@ -1,5 +1,6 @@
 """turn_context：匹配与相似度。"""
 
+from app.schemas.narrative_plan import NarrativePlan
 from app.services.narrative.turn_context import (
     build_turn_hints_text,
     match_choice_beat_index,
@@ -67,3 +68,26 @@ def test_build_turn_hints_creative_ft3_bridge() -> None:
     assert hints is not None
     assert "创作模式" in hints
     assert "误解" in hints and "比喻" in hints
+
+
+def test_build_turn_hints_includes_narrative_plan_arc() -> None:
+    plan = NarrativePlan(
+        opening_anchor_summary="序章港口",
+        arc_goal="抵达王都",
+        current_timeline_order=2,
+        arc_end_order=9,
+        fallback_reason="test_fb",
+    )
+    hints = build_turn_hints_text(
+        mode="strict",
+        state={"active_goal": "走", "current_location": "路"},
+        prev_gm_content=None,
+        prev_meta=None,
+        user_text="继续",
+        narrative_plan=plan,
+    )
+    assert hints is not None
+    assert "序章港口" in hints
+    assert "弧线上界次序：9" in hints
+    assert "narrative_timeline_order" in hints
+    assert "test_fb" in hints

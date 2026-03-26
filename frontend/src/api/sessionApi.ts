@@ -41,6 +41,47 @@ export async function postOpening(sessionId: number): Promise<OpeningGenerationR
   return data;
 }
 
+/** 同一 sessionId 进行中的开场请求合并为单条 HTTP，避免 Strict Mode 双挂载重复 POST。 */
+const openingInflight = new Map<number, Promise<OpeningGenerationResponse>>();
+const openingDedupeListeners = new Map<number, Set<() => void>>();
+
+function notifyOpeningDedupe(sessionId: number) {
+  openingDedupeListeners.get(sessionId)?.forEach((cb) => cb());
+}
+
+/** 供 useSyncExternalStore：当前会话是否有进行中的开场请求（含去重合并）。 */
+export function subscribeOpeningDedupe(sessionId: number, onStoreChange: () => void) {
+  let set = openingDedupeListeners.get(sessionId);
+  if (!set) {
+    set = new Set();
+    openingDedupeListeners.set(sessionId, set);
+  }
+  set.add(onStoreChange);
+  return () => {
+    set!.delete(onStoreChange);
+    if (set!.size === 0) {
+      openingDedupeListeners.delete(sessionId);
+    }
+  };
+}
+
+export function getOpeningDedupePending(sessionId: number): boolean {
+  return openingInflight.has(sessionId);
+}
+
+export async function postOpeningDeduped(sessionId: number): Promise<OpeningGenerationResponse> {
+  const existing = openingInflight.get(sessionId);
+  if (existing) return existing;
+  notifyOpeningDedupe(sessionId);
+  const p = postOpening(sessionId).finally(() => {
+    openingInflight.delete(sessionId);
+    notifyOpeningDedupe(sessionId);
+  });
+  openingInflight.set(sessionId, p);
+  notifyOpeningDedupe(sessionId);
+  return p;
+}
+
 export async function postFeedback(sessionId: number, body: FeedbackPayload): Promise<unknown> {
   const { data } = await apiClient.post(`/api/sessions/${sessionId}/feedback`, body);
   return data;

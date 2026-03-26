@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.rag_config import RagConfig
-from app.services.rag.base import RetrievalResult
+from app.services.rag.base import RetrievalResult, TimelineRetrievalBias
 from app.services.rag.variant_a import NaiveHybridRetriever
 from app.services.rag.variant_b import ParentChildRetriever
 from app.services.rag.variant_c import StructuredRetriever
@@ -29,6 +29,8 @@ async def dispatch_retrieve(
     query: str,
     story_version_id: int,
     rag_config_id: int | None = None,
+    *,
+    timeline_bias: TimelineRetrievalBias | None = None,
 ) -> RetrievalResult:
     if rag_config_id is not None:
         rc = await get_rag_config_by_id(db, rag_config_id)
@@ -39,9 +41,15 @@ async def dispatch_retrieve(
     cfg = dict(rc.config or {})
     vt = (rc.variant_type or "").strip()
     if vt == "naive_hybrid":
-        return await NaiveHybridRetriever().retrieve(db, query, story_version_id, cfg)
+        return await NaiveHybridRetriever().retrieve(
+            db, query, story_version_id, cfg, timeline_bias=timeline_bias
+        )
     if vt == "parent_child":
-        return await ParentChildRetriever().retrieve(db, query, story_version_id, cfg)
+        return await ParentChildRetriever().retrieve(
+            db, query, story_version_id, cfg, timeline_bias=timeline_bias
+        )
     if vt == "structured":
-        return await StructuredRetriever().retrieve(db, query, story_version_id, cfg)
+        return await StructuredRetriever().retrieve(
+            db, query, story_version_id, cfg, timeline_bias=timeline_bias
+        )
     raise ValueError(f"未知 variant_type: {vt}")

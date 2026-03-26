@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.prompt_template import PromptTemplate
+from app.schemas.narrative_plan import NarrativePlan
 from app.services.profile_loader import profile_bundle_nonempty
 
 # 环境开关 NARRATIVE_CONCISE_MODE 为真时追加到 system 末尾（与 seed META_BLOCK 互补）。
@@ -39,6 +40,106 @@ TWO_PHASE_ROUND_TWO_SUFFIX = (
 )
 
 # 第二次调用（选项专模）追加在 system 末尾的任务说明。
+def format_opening_arc_constraints_for_turn_hints(plan: NarrativePlan) -> str:
+    """注入开场回合 turn_hints：主约束=锚点与弧线，次约束=玩家意图（在 user 尾段单独给）。"""
+    fb = ""
+    if plan.fallback_reason.strip():
+        fb = f"\n规划备注（fallback）：{plan.fallback_reason.strip()}"
+    return (
+        "[开场·时间线与弧线主约束]\n"
+        f"锚点摘要：{plan.opening_anchor_summary.strip() or '（无）'}\n"
+        f"弧线目标：{plan.arc_goal.strip() or '（无）'}\n"
+        f"当前时间线次序：{plan.current_timeline_order}；"
+        f"本会话弧线上界次序：{plan.arc_end_order}。\n"
+        "首段必须向玩家交代：当前处于作品时间线的哪一阶段（章节/时期/与锚点事件的先后关系），"
+        "不得无铺垫跳到弧线上界之后的情节。\n"
+        "玩家介入意图仅作气质与关注点参考（见下一条 user 中的「次要」段），不得以意图覆盖上述锚点。"
+        f"{fb}"
+    )
+
+
+def format_turn_arc_constraints_for_turn_hints(plan: NarrativePlan) -> str:
+    """接续回合 turn_hints：与开场约束一致，并约定 META 中的 narrative_timeline_order / narrative_arc_complete。"""
+    fb = ""
+    if plan.fallback_reason.strip():
+        fb = f"\n规划备注（fallback）：{plan.fallback_reason.strip()}"
+    return (
+        "[回合推进·时间线与弧线]\n"
+        f"锚点摘要：{plan.opening_anchor_summary.strip() or '（无）'}\n"
+        f"弧线目标：{plan.arc_goal.strip() or '（无）'}\n"
+        f"当前时间线次序：{plan.current_timeline_order}；弧线上界次序：{plan.arc_end_order}。\n"
+        "承接时必须服从上述边界：不得无桥接跳到弧线上界之后；玩家意图不得覆盖时间线约束。\n"
+        "在 META 的 `state_update` 对象中可使用整数键 `narrative_timeline_order`（服务端读取，勿写入玩家可见 state 四键）："
+        "表示本回合结束后剧情在时间线上的次序，须 ≥ 当前次序且每回合最多前进 1；不得超过弧线上界。"
+        "若本回合为弧线终局收束，可另设布尔键 `narrative_arc_complete`: true。"
+        f"{fb}"
+    )
+
+
+def format_timeline_arc_for_choice_grounding(plan: NarrativePlan) -> str:
+    """选项质检 / 补全 LLM 用：与 turn_hints 同源字段 + 选项专用短规则（避免与 format_turn_arc_constraints 漂移）。"""
+    fb = ""
+    if plan.fallback_reason.strip():
+        fb = f"\n规划备注（fallback）：{plan.fallback_reason.strip()}"
+    return (
+        "[选项质检·时间线与弧线]\n"
+        f"锚点摘要：{plan.opening_anchor_summary.strip() or '（无）'}\n"
+        f"弧线目标：{plan.arc_goal.strip() or '（无）'}\n"
+        f"当前时间线次序：{plan.current_timeline_order}；弧线上界次序：{plan.arc_end_order}。\n"
+        "每条选项须为当前阶段内合理、可执行的下一步；不得暗示跳过叙事与证据未交代的关键阶段；"
+        "不得将剧情推进到弧线上界之后；避免「直接终局、大结局、多年后」等与当前次序明显不符的跳跃。"
+        f"{fb}"
+    )
+
+
+def format_opening_two_phase_user_block(
+    *,
+    plan: NarrativePlan,
+    player_intent: str,
+) -> str:
+    """双阶段第二轮 user 尾块：主约束 + 次要意图。"""
+    intent = player_intent.strip() or "（未特别说明）"
+    return (
+        "[时间线锚点与弧线·主约束]\n"
+        f"{plan.opening_anchor_summary.strip() or '（无锚点摘要）'}\n"
+        f"弧线目标：{plan.arc_goal.strip() or '（无）'}\n"
+        f"当前时间线次序：{plan.current_timeline_order}；弧线上界次序：{plan.arc_end_order}。\n\n"
+        f"[玩家介入意图（次要约束）]\n{intent}"
+    )
+
+
+_ROLEPLAY_POV_OPENING_HINT = (
+    "[开场·扮演/代入视角（次要于时间线锚点）]\n"
+    "玩家介入意图体现「扮演、代入或第一人称体验」时：在**已确定的时间线锚点与弧线边界**内，"
+    "开场可读叙事正文优先采用玩家所指角色之**第一人称**（「我」）叙述，以增强代入感；"
+    "不得以代入为由跳过或弱化锚点交代。\n"
+    "若意图未点名具体角色，可在锚点场景中**合理推断**一个视点人物；若无法合理推断，则仍用 GM 第三人称。\n"
+    "META 中的 `choices` 仍为面向玩家的简短可点行动句，不必写成第一人称。"
+)
+
+
+def roleplay_pov_hint_for_opening(opening_goal: str) -> str | None:
+    """
+    当 opening_goal 像「扮演/代入/第一人称」诉求时，返回追加到开场 turn_hints 的说明；否则 None。
+    不改变弧线规划；与 RULES §5.11（时间线优先于玩家目标）一致。
+    """
+    s = (opening_goal or "").strip()
+    if not s:
+        return None
+    low = s.lower()
+    if any(k in s for k in ("扮演", "代入", "饰演", "第一人称")):
+        return _ROLEPLAY_POV_OPENING_HINT
+    if "cos" in low:
+        return _ROLEPLAY_POV_OPENING_HINT
+    if "以" in s and "身份" in s:
+        return _ROLEPLAY_POV_OPENING_HINT
+    if ("视角" in s or "视点" in s) and any(
+        k in s for k in ("扮演", "代入", "角色", "主人公", "主角")
+    ):
+        return _ROLEPLAY_POV_OPENING_HINT
+    return None
+
+
 CHOICES_ONLY_TASK_SUFFIX = (
     "【分步生成·选项轮】上一条 user 为检索证据，本条含已定叙事与状态。"
     "请只输出**一行**合法 JSON 对象，不要 Markdown、不要解释。"

@@ -15,6 +15,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.services.llm.deepseek import deepseek_chat
+from app.services.narrative.choice_timeline_heuristic import choices_suggest_timeline_skip
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,8 @@ _SYSTEM_STRICT = (
     "**禁止**两条在全文去空白、NFKC 规范化后实质相同，或仅为同义换皮；\n"
     '- "choice_beats": 字符串数组，**仅当** user 中 current_choice_beats 非空时必填，且必须与 choices 等长，'
     "每项 1～2 句第三人称大纲；若 user 中 current_choice_beats 为空数组则不要输出 choice_beats 键。\n"
+    "若 user JSON 含 timeline_arc_constraints，须将其与 evidence_excerpt、narrative_excerpt 一并作为合格标准；"
+    "若因时间线/阶段不符则 grounding_ok 应为 false，修订选项至符合后可置 true。\n"
     "若仍不达标，仍输出你认为最优的 choices（2～4 条），并将 grounding_ok 置为 false。"
 )
 
@@ -46,6 +49,7 @@ _SYSTEM_CREATIVE = (
     "你是创作模式文字冒险的选项编辑。以检索证据为锚，允许在自洽前提下更有趣；"
     "仅当选项与证据**明显矛盾**或彼此重复时将 grounding_ok 置为 false。"
     "choices 中不得含实质重复项（去空白、NFKC 后不得两条相同或仅措辞微差）。"
+    "若 user JSON 含 timeline_arc_constraints，选项仍须服从其中时间线与弧线上界，不得无桥接跳到终局之后。"
     "只输出**一行**合法 JSON：grounding_ok（bool）、choices（2～4 条中文短行动）。"
     "若 user 中 current_choice_beats 非空，须同时输出与 choices 等长的 choice_beats；否则不要输出 choice_beats。"
 )
@@ -134,6 +138,8 @@ async def ground_choices_for_turn(
     beats: list[str] | None,
     max_attempts: int | None = None,
     attempt_timings_ms: list[int] | None = None,
+    timeline_arc_constraints: str | None = None,
+    timeline_orders_for_heuristic: tuple[int, int] | None = None,
 ) -> GroundingResult:
     """
     对候选 choices 做多轮 LLM 质检与改写。choices 少于 2 条时直接返回，不调用模型。
@@ -180,9 +186,23 @@ async def ground_choices_for_turn(
     attempts_used = 0
     grounding_ok = False
 
+    tac = (timeline_arc_constraints or "").strip()
+    heur_mode = (settings.NARRATIVE_CHOICE_TIMELINE_HEURISTIC_MODE or "off").strip().lower()
+
     for attempt_idx in range(attempts_cap):
         attempts_used += 1
         beats_in = current_be if had_input_beats else []
+        jump_heur = False
+        if heur_mode in ("log", "note") and timeline_orders_for_heuristic is not None:
+            cur_o, end_o = timeline_orders_for_heuristic
+            jump_heur = choices_suggest_timeline_skip(cur_o, end_o, current_ch)
+            if jump_heur and heur_mode == "log":
+                logger.info(
+                    "choice_grounding timeline_jump_heuristic choices=%r attempt=%s",
+                    current_ch,
+                    attempt_idx + 1,
+                )
+
         payload: dict[str, Any] = {
             "evidence_excerpt": ev,
             "narrative_excerpt": nar,
@@ -192,8 +212,17 @@ async def ground_choices_for_turn(
             "attempt": attempt_idx + 1,
             "session_mode": mode,
         }
+        if tac:
+            payload["timeline_arc_constraints"] = tac
         if attempt_idx > 0:
-            payload["note"] = "上一轮 grounding_ok 为 false，请修订 choices（及 beats 若适用）直至可置 true。"
+            parts = [
+                "上一轮 grounding_ok 为 false，请修订 choices（及 beats 若适用）直至可置 true。",
+            ]
+            if heur_mode == "note" and jump_heur:
+                parts.append(
+                    "另：当前选项措辞可能暗示跳过未交代阶段或终局跳跃，请改写为当前时间线阶段内的行动。"
+                )
+            payload["note"] = " ".join(parts)
 
         human = (
             "请根据下列 JSON 质检并必要时改写选项，只输出一行 JSON 对象：\n"

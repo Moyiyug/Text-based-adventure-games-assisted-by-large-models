@@ -32,7 +32,7 @@ export default function NewSessionPage() {
     e.preventDefault();
     const goal = openingGoal.trim();
     if (!goal) {
-      toast.error("请填写冒险目标");
+      toast.error("请填写介入意图");
       return;
     }
     if (!Number.isFinite(sid)) return;
@@ -115,12 +115,15 @@ export default function NewSessionPage() {
 
             <div>
               <label htmlFor="opening-goal" className="text-sm font-medium text-text-primary">
-                冒险目标
+                介入意图
               </label>
+              <p className="mt-1 text-xs text-text-secondary">
+                描述你想体验的方向或关注点（接口字段仍为 opening_goal）。
+              </p>
               <Textarea
                 id="opening-goal"
                 className="mt-2"
-                placeholder="描述你希望在本作中达成的体验或目标…"
+                placeholder="例如：想走悬疑线、多看某角色、体验某段剧情氛围…"
                 value={openingGoal}
                 onChange={(e) => setOpeningGoal(e.target.value)}
                 disabled={submitting}

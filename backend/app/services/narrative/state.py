@@ -17,7 +17,7 @@ _STATE_KEYS = frozenset(
 
 
 def initialize_state(session: NarrativeSession) -> dict[str, Any]:
-    """创建 turn 0 状态骨架；active_goal 来自会话的 opening_goal。"""
+    """创建 turn 0 状态骨架；active_goal 来自 opening_goal，仅作玩家意图展示（RULES §5.11），剧情阶段由 narrative_plan 约束。"""
     goal = (session.opening_goal or "").strip()
     return {
         "current_location": "",

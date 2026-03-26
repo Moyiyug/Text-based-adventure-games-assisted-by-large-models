@@ -1,8 +1,9 @@
 """管理员会话查看 API 的 Pydantic 模型。参照 BACKEND_STRUCTURE §2.10。"""
 
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.session import SessionMessageOut
 
@@ -19,6 +20,8 @@ class AdminSessionListItem(BaseModel):
     rag_config_id: int
     mode: str
     status: str
+    narrative_status: str = "opening_pending"
+    narrative_plan: dict[str, Any] = Field(default_factory=dict)
     turn_count: int
     opening_goal: str
     created_at: datetime | None = None
@@ -35,6 +38,8 @@ class TranscriptSessionMeta(BaseModel):
     rag_config_id: int
     mode: str
     status: str
+    narrative_status: str = "opening_pending"
+    narrative_plan: dict[str, Any] = Field(default_factory=dict)
     turn_count: int
     opening_goal: str
 

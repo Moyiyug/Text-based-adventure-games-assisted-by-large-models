@@ -33,6 +33,8 @@ export interface SessionListItem {
   rag_config_id: number;
   mode: string;
   status: string;
+  narrative_status: string;
+  narrative_plan: Record<string, unknown>;
   turn_count: number;
   opening_goal: string;
   created_at?: string | null;
@@ -47,6 +49,8 @@ export interface SessionResponse {
   rag_config_id: number;
   mode: string;
   opening_goal: string;
+  narrative_status: string;
+  narrative_plan: Record<string, unknown>;
   style_config: Record<string, unknown>;
   status: string;
   turn_count: number;

@@ -29,6 +29,10 @@ class Session(Base):
     mode: Mapped[str] = mapped_column(String(10), nullable=False)
     opening_goal: Mapped[str] = mapped_column(Text, nullable=False)
     style_config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    narrative_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="opening_pending"
+    )
+    narrative_plan: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(15), nullable=False, default="active")
     turn_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(

@@ -1,9 +1,17 @@
 import { useAuthStore } from "../stores/authStore";
 
+export interface CompletionPayload {
+  reason: string;
+  summary: string;
+  narrative_status: string;
+}
+
 export interface SSEEventHandlers {
   onToken?: (content: string) => void;
   onChoices?: (choices: string[]) => void;
   onStateUpdate?: (state: Record<string, unknown>) => void;
+  /** Phase 11：终局回合，在 choices 之前收到（与 BACKEND_STRUCTURE §4.4.2 一致） */
+  onCompletion?: (payload: CompletionPayload) => void;
   onError?: (message: string) => void;
   onDone?: () => void;
 }
@@ -14,6 +22,47 @@ interface SSEPayload {
   choices?: string[];
   state?: Record<string, unknown>;
   message?: string;
+  reason?: string;
+  summary?: string;
+  narrative_status?: string;
+}
+
+/** 供单测与流式解析复用 */
+export function dispatchSsePayload(
+  ev: SSEPayload,
+  handlers: SSEEventHandlers
+): void {
+  switch (ev.type) {
+    case "token":
+      if (ev.content) handlers.onToken?.(ev.content);
+      break;
+    case "choices":
+      handlers.onChoices?.(ev.choices ?? []);
+      break;
+    case "state_update":
+      if (ev.state && typeof ev.state === "object") {
+        handlers.onStateUpdate?.(ev.state);
+      }
+      break;
+    case "completion":
+      handlers.onCompletion?.({
+        reason: typeof ev.reason === "string" ? ev.reason : "",
+        summary: typeof ev.summary === "string" ? ev.summary : "",
+        narrative_status:
+          typeof ev.narrative_status === "string" ? ev.narrative_status : "completed",
+      });
+      break;
+    case "error":
+      handlers.onError?.(
+        typeof ev.message === "string" ? ev.message : "生成出错"
+      );
+      break;
+    case "done":
+      handlers.onDone?.();
+      break;
+    default:
+      break;
+  }
 }
 
 /**
@@ -94,26 +143,13 @@ export async function streamSessionMessage(
         } catch {
           continue;
         }
-        switch (ev.type) {
-          case "token":
-            if (ev.content) handlers.onToken?.(ev.content);
-            break;
-          case "choices":
-            handlers.onChoices?.(ev.choices ?? []);
-            break;
-          case "state_update":
-            if (ev.state && typeof ev.state === "object") {
-              handlers.onStateUpdate?.(ev.state);
-            }
-            break;
-          case "error":
-            handlers.onError?.(typeof ev.message === "string" ? ev.message : "生成出错");
-            break;
-          case "done":
-            fireDone();
-            break;
-          default:
-            break;
+        if (ev.type === "done") {
+          fireDone();
+        } else {
+          dispatchSsePayload(ev, {
+            ...handlers,
+            onDone: undefined,
+          });
         }
       }
 

@@ -17,6 +17,19 @@ class StructuredHit:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class TimelineRetrievalBias:
+    """
+    回合检索时间线偏置：对命中当前/邻接时间线事件关联 chapter/scene 的 chunk 加分。
+    naive_hybrid 已实现；parent_child / structured 首版忽略。
+    """
+
+    primary_chapter_id: int | None = None
+    primary_scene_id: int | None = None
+    neighbor_chapter_ids: frozenset[int] = field(default_factory=frozenset)
+    neighbor_scene_ids: frozenset[int] = field(default_factory=frozenset)
+
+
 @dataclass
 class RetrievedChunk:
     text_chunk_id: int
@@ -43,5 +56,7 @@ class BaseRetriever(ABC):
         query: str,
         story_version_id: int,
         config: dict,
+        *,
+        timeline_bias: TimelineRetrievalBias | None = None,
     ) -> RetrievalResult:
         pass

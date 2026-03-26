@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     NARRATIVE_CHOICE_GROUNDING_MAX_ATTEMPTS: int = 2
     NARRATIVE_CHOICE_GROUNDING_EVIDENCE_CHARS: int = 2500
     NARRATIVE_CHOICE_GROUNDING_NARRATIVE_CHARS: int = 3500
+    # 为 False 时不向选项 grounding / refine / synthesize 注入时间线弧线块（回滚开关）。
+    NARRATIVE_CHOICE_TIMELINE_HINT_ENABLED: bool = True
+    # 选项「可能跳时间线」启发式：off 关闭；log 仅打日志；note 时在 grounding 第 2 次 attempt 的 note 中追加改写提示。
+    NARRATIVE_CHOICE_TIMELINE_HEURISTIC_MODE: str = "off"
 
     # --- Turn wall-clock timing (Phase 10 / BACKEND_STRUCTURE §4.4.6) ---
     # true 时每轮 SSE 叙事在 INFO 打一条 turn_timing JSON（含 session_id、turn、各段 ms）。

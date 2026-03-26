@@ -17,6 +17,7 @@ _RETRIEVAL_FALLBACK_MAX_CHARS = 4000
 _SYSTEM_PROMPT = (
     "你是交互小说选项生成器。根据叙事与玩家输入，只输出一行合法 JSON 数组，"
     "含 2～4 个字符串，每个为简短中文玩家行动（无 Markdown、无编号、无解释）。"
+    "若 user 消息中含「时间线与弧线（选项补全）」段，生成的行动必须为该阶段内合理下一步，不得暗示跳过未交代阶段或弧线上界之后。"
 )
 
 
@@ -68,6 +69,7 @@ async def synthesize_choices_from_context(
     max_item_len: int = 120,
     assembled_context: str | None = None,
     templates: dict[str, str] | None = None,
+    timeline_arc_hint: str | None = None,
 ) -> list[str]:
     """
     基于叙事节选 + 玩家输入生成选项；失败返回 []。
@@ -78,7 +80,10 @@ async def synthesize_choices_from_context(
     max_chars = max(500, settings.NARRATIVE_CHOICES_LLM_MAX_INPUT_CHARS)
     nar_excerpt = _truncate_narrative(narrative, max_chars)
     user_line = user_input.strip() or "（无）"
+    tac = (timeline_arc_hint or "").strip()
+    timeline_block = f"【时间线与弧线（选项须服从）】\n{tac}\n\n" if tac else ""
     tail = (
+        f"{timeline_block}"
         f"【玩家输入】\n{user_line}\n\n【叙事节选】\n{nar_excerpt}\n\n"
         "只输出 JSON 数组，例如：[\"靠近观察\",\"转身离开\"]"
     )

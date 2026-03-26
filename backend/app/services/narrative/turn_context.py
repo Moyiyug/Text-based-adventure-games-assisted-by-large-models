@@ -6,6 +6,8 @@ import re
 from typing import Any
 
 from app.core.config import settings
+from app.schemas.narrative_plan import NarrativePlan
+from app.services.narrative.prompts import format_turn_arc_constraints_for_turn_hints
 
 
 def _words(s: str) -> set[str]:
@@ -57,6 +59,7 @@ def build_turn_hints_text(
     prev_meta: dict[str, Any] | None,
     user_text: str,
     prev_prev_gm_content: str | None = None,
+    narrative_plan: NarrativePlan | None = None,
 ) -> str | None:
     """
     拼装注入到 build_generation_prompt 的 turn_hints。
@@ -79,6 +82,9 @@ def build_turn_hints_text(
         "自由输入与点选同等对待；须回应输入本身（含含糊处可做最小必要的语义对齐），"
         "具体「是否将矛盾陈述当作事实承认」见下方模式块。"
     )
+
+    if narrative_plan is not None:
+        chunks.append(format_turn_arc_constraints_for_turn_hints(narrative_plan))
 
     if prev_gm_content and prev_gm_content.strip():
         chunks.append(

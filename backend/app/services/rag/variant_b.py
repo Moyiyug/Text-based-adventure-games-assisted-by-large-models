@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.content import Chapter, Scene, TextChunk
-from app.services.rag.base import BaseRetriever, RetrievedChunk, RetrievalResult
+from app.services.rag.base import BaseRetriever, RetrievedChunk, RetrievalResult, TimelineRetrievalBias
 from app.services.rag.chroma_query import chroma_query_chunk_ids
 
 
@@ -24,7 +24,10 @@ class ParentChildRetriever(BaseRetriever):
         query: str,
         story_version_id: int,
         config: dict,
+        *,
+        timeline_bias: TimelineRetrievalBias | None = None,
     ) -> RetrievalResult:
+        _ = timeline_bias  # naive_hybrid 已实现；parent_child 暂忽略，保留接口
         child_top_k = int(config.get("child_top_k", 5))
         parent_expand = int(config.get("parent_expand", 2))
 

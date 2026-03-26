@@ -68,11 +68,15 @@ def test_process_turn_sse_content_policy_rollback() -> None:
     session.mode = "strict"
     session.style_config = {}
     session.turn_count = 0
+    session.narrative_status = "in_progress"
+    session.narrative_plan = {}
 
     db = AsyncMock()
     db.add = MagicMock()
     db.flush = AsyncMock()
     db.rollback = AsyncMock()
+    db.refresh = AsyncMock()
+    db.commit = AsyncMock()
 
     async def _run() -> list[str]:
         lines: list[str] = []
@@ -90,6 +94,16 @@ def test_process_turn_sse_content_policy_rollback() -> None:
                 "app.services.narrative.engine.load_session_profile_bundle",
                 new_callable=AsyncMock,
                 return_value={},
+            ),
+            patch(
+                "app.services.narrative.engine.get_rag_config_by_id",
+                new_callable=AsyncMock,
+                return_value=MagicMock(config={}),
+            ),
+            patch(
+                "app.services.narrative.engine.build_turn_retrieval_query_and_bias",
+                new_callable=AsyncMock,
+                return_value=("hello", None),
             ),
             patch(
                 "app.services.narrative.engine.dispatch_retrieve",
@@ -112,6 +126,10 @@ def test_process_turn_sse_content_policy_rollback() -> None:
                 "app.services.narrative.engine._message_history",
                 new_callable=AsyncMock,
                 return_value=[],
+            ),
+            patch(
+                "app.services.narrative.engine.schedule_profile_inference_after_turn",
+                MagicMock(),
             ),
         ):
             from app.services.rag.base import RetrievalResult

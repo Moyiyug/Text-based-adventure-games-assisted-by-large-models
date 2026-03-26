@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -21,6 +22,7 @@ from app.services.narrative.choice_dedupe import ensure_at_least_two_choices
 from app.services.narrative.choice_fallback import synthesize_choices_from_context
 from app.services.narrative.choice_grounding import ground_choices_for_turn
 from app.services.narrative.choice_refine import refine_strict_choices
+from app.services.narrative.choice_timeline_heuristic import choices_suggest_timeline_skip
 from app.services.narrative.meta_parse import (
     MetaStreamSplitter,
     ParsedTurnOutput,
@@ -33,10 +35,31 @@ from app.services.narrative.safety import (
     is_likely_content_policy_block,
     soften_content,
 )
+from app.schemas.narrative_plan import (
+    NarrativePlan,
+    narrative_plan_to_jsonable,
+    parse_narrative_plan,
+)
+from app.services.narrative.arc_progression import (
+    advance_timeline_order,
+    evaluate_arc_completion,
+    split_state_update_for_arc,
+)
 from app.services.narrative.prompts import (
     build_generation_prompt,
     build_two_phase_meta_prompt,
+    format_opening_arc_constraints_for_turn_hints,
+    format_opening_two_phase_user_block,
+    format_timeline_arc_for_choice_grounding,
     load_prompt_templates,
+    roleplay_pov_hint_for_opening,
+)
+from app.services.narrative.session_arc_planner import (
+    apply_narrative_plan_to_session,
+    build_opening_retrieval_query_text,
+    build_turn_retrieval_query_and_bias,
+    narrative_plan_needs_replan,
+    plan_session_arc,
 )
 from app.services.narrative.turn_context import build_turn_hints_text
 from app.services.narrative.state import apply_state_update, validate_state_update
@@ -47,9 +70,14 @@ from app.services.profile_loader import (
 )
 from app.services.rag.base import RetrievalResult
 from app.services.rag.context import assemble_context, serialize_retrieval_parts
-from app.services.rag.dispatcher import dispatch_retrieve
+from app.services.rag.dispatcher import dispatch_retrieve, get_rag_config_by_id
 
 logger = logging.getLogger(__name__)
+
+
+class EmptyOpeningNarrativeError(Exception):
+    """开场正文在剥离 META 泄漏后缀后仍为空，且非内容策略兜底路径。"""
+
 
 _HISTORY_LIMIT = 24
 _META_LOG_TAIL = 400
@@ -79,16 +107,61 @@ def _log_meta_parse_issue(
 _TOKEN_BUDGET = 6000
 
 OPENING_USER_PROMPT = (
-    "请根据玩家的冒险目标，生成本会话的**开场**交互叙事，并给出首批选项。"
-    "严格遵守系统提示中的输出格式（叙事后接 ---META--- 再单行 JSON）。"
-    "开场须尊重原作**时间线**：从检索证据所暗示的、玩家可介入的**较早合理锚点**切入，避免一跳到后期剧透或终盘场景；"
-    "若证据含多段，优先选**时序靠前**且能建立场景与目标的片段来组织开场。"
+    "请根据系统提示中的**时间线锚点、会话弧线边界**与检索证据，生成本会话的**开场**交互叙事，并给出首批选项。"
+    "严格遵守输出格式（叙事后接 ---META--- 再单行 JSON）。"
+    "不得以玩家在下方单独给出的「介入意图」为由，跳到弧线上界之后或明显晚于锚点的情节。"
 )
 
 OPENING_TURN_HINTS = (
     "[开场回合]\n本段为会话首次叙事：建立场景、张力与可点选项；无需承接上一轮 GM。\n"
     "首段应用一两句点明当前在作品时间轴中的位置（如章节/时期/关键事件前后关系），勿用终局或重大剧透后的台词作无铺垫开场锚点。"
 )
+
+
+def _choice_timeline_tac_and_orders(
+    plan: NarrativePlan | None,
+) -> tuple[str | None, tuple[int, int] | None]:
+    """选项质检注入用时间线块；orders 供 grounding 内启发式（与 hint 开关独立）。"""
+    if plan is None:
+        return None, None
+    orders = (plan.current_timeline_order, plan.arc_end_order)
+    if not settings.NARRATIVE_CHOICE_TIMELINE_HINT_ENABLED:
+        return None, orders
+    tac = format_timeline_arc_for_choice_grounding(plan).strip()
+    return (tac or None), orders
+
+
+def _pre_grounding_timeline_heuristic_flag(plan: NarrativePlan | None, choices: list[str]) -> bool:
+    if plan is None or len(choices) < 2:
+        return False
+    return choices_suggest_timeline_skip(
+        plan.current_timeline_order,
+        plan.arc_end_order,
+        choices,
+    )
+
+
+def _log_choice_grounding_observability(
+    *,
+    session_id: int,
+    turn_number: int,
+    grounding_failed: bool,
+    choices_changed: bool,
+    attempts_used: int,
+    timeline_hint_applied: bool,
+) -> None:
+    if not grounding_failed and not choices_changed:
+        return
+    logger.info(
+        "choice_grounding_observability session_id=%s turn=%s grounding_failed=%s "
+        "choices_changed=%s attempts_used=%s timeline_hint_applied=%s",
+        session_id,
+        turn_number,
+        grounding_failed,
+        choices_changed,
+        attempts_used,
+        timeline_hint_applied,
+    )
 
 
 async def _last_n_assistant_messages(
@@ -115,18 +188,21 @@ async def _maybe_refine_strict_choices(
     context: str,
     choices: list[str],
     beats: list[str] | None,
+    narrative_plan: NarrativePlan | None = None,
 ) -> tuple[list[str], list[str] | None, bool]:
     """回合路径在 ``NARRATIVE_CHOICE_GROUNDING_ENABLED`` 时改走 ``ground_choices_for_turn``，本函数仅作回退/开场等保留。"""
     if mode != "strict" or not settings.NARRATIVE_STRICT_CHOICE_REFINE:
         return choices, beats, False
     if len(choices) < 2:
         return choices, beats, False
+    tac, _orders = _choice_timeline_tac_and_orders(narrative_plan)
     refined = await refine_strict_choices(
         narrative_excerpt=narrative,
         state_json=json.dumps(prev_state or {}, ensure_ascii=False),
         evidence_excerpt=context,
         current_choices=choices,
         current_beats=beats,
+        timeline_arc_constraints=tac,
     )
     if not refined:
         return choices, beats, False
@@ -142,12 +218,18 @@ async def _apply_choice_grounding_or_refine(
     choices: list[str],
     beats: list[str] | None,
     grounding_attempt_timings_ms: list[int] | None = None,
+    narrative_plan: NarrativePlan | None = None,
+    session_id: int | None = None,
+    turn_number: int | None = None,
 ) -> tuple[list[str], list[str] | None, bool, bool, int]:
     """
     候选 options：开启 grounding 时走 ``ground_choices_for_turn``，否则 ``_maybe_refine_strict_choices``。
     返回 (choices, beats, choices_changed_flag, grounding_failed, grounding_attempts)；
     未走 grounding 时后两项为 (False, 0)。
     """
+    tac, orders = _choice_timeline_tac_and_orders(narrative_plan)
+    timeline_hint_applied = bool(tac)
+
     if settings.NARRATIVE_CHOICE_GROUNDING_ENABLED and len(choices) >= 2:
         gr = await ground_choices_for_turn(
             mode=mode,
@@ -157,7 +239,19 @@ async def _apply_choice_grounding_or_refine(
             choices=choices,
             beats=beats,
             attempt_timings_ms=grounding_attempt_timings_ms,
+            timeline_arc_constraints=tac,
+            timeline_orders_for_heuristic=orders,
         )
+        if session_id is not None and turn_number is not None:
+            if gr.grounding_failed or gr.choices_changed_from_input:
+                _log_choice_grounding_observability(
+                    session_id=session_id,
+                    turn_number=turn_number,
+                    grounding_failed=gr.grounding_failed,
+                    choices_changed=gr.choices_changed_from_input,
+                    attempts_used=gr.attempts_used,
+                    timeline_hint_applied=timeline_hint_applied,
+                )
         return (
             gr.choices,
             gr.choice_beats,
@@ -172,6 +266,7 @@ async def _apply_choice_grounding_or_refine(
         context=evidence_context,
         choices=choices,
         beats=beats,
+        narrative_plan=narrative_plan,
     )
     return ch, be, refined, False, 0
 
@@ -278,14 +373,22 @@ async def generate_opening(
     session: NarrativeSession,
 ) -> NarrativeResult:
     """非流式生成开场，写入 assistant 消息、状态与事件。"""
-    templates = await load_prompt_templates(db, session.mode)
-    profile_bundle = await load_session_profile_bundle(
-        db, session.user_id, session.story_id
+    if narrative_plan_needs_replan(session):
+        replan = await plan_session_arc(db, session)
+        apply_narrative_plan_to_session(session, replan, narrative_status="opening_pending")
+        await db.flush()
+
+    retrieve_query = await build_opening_retrieval_query_text(db, session)
+    narrative_plan = parse_narrative_plan(session.narrative_plan)
+
+    templates, profile_bundle = await asyncio.gather(
+        load_prompt_templates(db, session.mode),
+        load_session_profile_bundle(db, session.user_id, session.story_id),
     )
     profile_used = profile_bundle_nonempty(profile_bundle)
     retrieved = await dispatch_retrieve(
         db,
-        session.opening_goal or "开场",
+        retrieve_query,
         session.story_version_id,
         session.rag_config_id,
     )
@@ -296,10 +399,19 @@ async def generate_opening(
         profile=profile_bundle,
     )
     state = await _latest_state_dict(db, session.id)
-    opening_hints = OPENING_TURN_HINTS if settings.NARRATIVE_TURN_HINTS_ENABLED else None
+    intent_tail = (session.opening_goal or "").strip() or "（未特别说明）"
+    opening_user_body = f"{OPENING_USER_PROMPT}\n\n[玩家介入意图（次要）]\n{intent_tail}"
+    hint_chunks: list[str] = []
+    if settings.NARRATIVE_TURN_HINTS_ENABLED:
+        hint_chunks.append(OPENING_TURN_HINTS)
+    hint_chunks.append(format_opening_arc_constraints_for_turn_hints(narrative_plan))
+    pov_extra = roleplay_pov_hint_for_opening(session.opening_goal or "")
+    if pov_extra:
+        hint_chunks.append(pov_extra)
+    opening_hints = "\n\n".join(hint_chunks)
     opening_two_phase = settings.NARRATIVE_TWO_PHASE_ENABLED
     messages = build_generation_prompt(
-        OPENING_USER_PROMPT,
+        opening_user_body,
         context,
         state,
         None,
@@ -341,7 +453,10 @@ async def generate_opening(
                 context=context,
                 state=state,
                 narrative=narrative_body,
-                user_input=session.opening_goal or OPENING_USER_PROMPT,
+                user_input=format_opening_two_phase_user_block(
+                    plan=narrative_plan,
+                    player_intent=session.opening_goal or "",
+                ),
                 mode=session.mode,
                 style_config=dict(session.style_config or {}),
                 templates=templates,
@@ -388,6 +503,9 @@ async def generate_opening(
         choices_body = extract_choice_lines_from_narrative(narrative_body)
         if choices_body:
             choices_source_val = "narrative_regex"
+    opening_turn_for_meta = max(1, session.turn_count + 1)
+    opening_tac_for_choices, _opening_orders = _choice_timeline_tac_and_orders(narrative_plan)
+
     if (
         not choices_body
         and settings.NARRATIVE_CHOICES_LLM_FALLBACK
@@ -399,6 +517,7 @@ async def generate_opening(
                 narrative=narrative_body,
                 assembled_context=context,
                 templates=templates,
+                timeline_arc_hint=opening_tac_for_choices,
             )
         except Exception as fb_exc:  # noqa: BLE001
             logger.warning("opening choices LLM fallback error: %s", fb_exc)
@@ -407,6 +526,10 @@ async def generate_opening(
             choices_body = syn
             choices_source_val = "llm_fallback"
             choice_beats_body = None
+
+    opening_timeline_heuristic_flag = _pre_grounding_timeline_heuristic_flag(
+        narrative_plan, choices_body
+    )
 
     (
         choices_body,
@@ -421,6 +544,9 @@ async def generate_opening(
         evidence_context=context,
         choices=choices_body,
         beats=choice_beats_body,
+        narrative_plan=narrative_plan,
+        session_id=session.id,
+        turn_number=opening_turn_for_meta,
     )
 
     choices_body, choice_beats_body, source_override, choices_were_deduped = (
@@ -431,6 +557,7 @@ async def generate_opening(
             user_input="（故事开场，尚无玩家上一句行动。）",
             assembled_context=context,
             templates=templates,
+            timeline_arc_hint=opening_tac_for_choices,
         )
     )
     if source_override is not None:
@@ -466,11 +593,15 @@ async def generate_opening(
         opening_meta["choices_deduplicated"] = True
     if source_override in ("llm_fallback", "placeholder_fallback"):
         opening_meta["choices_min_enforced"] = True
+    if settings.NARRATIVE_CHOICE_TIMELINE_HINT_ENABLED and opening_tac_for_choices:
+        opening_meta["choices_timeline_hint_applied"] = True
+    if opening_timeline_heuristic_flag:
+        opening_meta["choices_timeline_heuristic_flag"] = True
     _attach_eval_grounding_snapshot(
         opening_meta,
         retrieved=retrieved,
         assembled_context=context,
-        query_text=session.opening_goal or "开场",
+        query_text=retrieve_query,
     )
     _merge_grounding_turn_meta(
         opening_meta,
@@ -478,6 +609,13 @@ async def generate_opening(
         choices_grounding_attempts=opening_grounding_attempts,
         choices_grounding_failed=opening_grounding_failed,
     )
+    narrative_for_store = strip_leaking_meta_suffix(narrative_body).strip()
+    if (
+        not narrative_for_store
+        and parse_error_body != "api_content_policy"
+    ):
+        await db.rollback()
+        raise EmptyOpeningNarrativeError()
     db.add(
         SessionMessage(
             session_id=session.id,
@@ -500,6 +638,7 @@ async def generate_opening(
         )
     )
     session.turn_count = new_turn
+    session.narrative_status = "in_progress"
     session.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(session)
@@ -535,8 +674,17 @@ async def process_turn_sse(
         yield _sse_line({"type": "done"})
         return
 
+    await db.refresh(session)
+    if session.narrative_status == "completed":
+        yield _sse_line(
+            {"type": "error", "message": "会话故事线已完成，无法继续推进"}
+        )
+        yield _sse_line({"type": "done"})
+        return
+
     state = await _latest_state_dict(db, session.id)
     history_for_prompt = await _message_history(db, session.id)
+    narrative_plan_for_hints = parse_narrative_plan(session.narrative_plan)
 
     current_turn = session.turn_count + 1
     db.add(
@@ -554,17 +702,32 @@ async def process_turn_sse(
     retrieve_ms = 0
     retrieved = None
     try:
-        templates = await load_prompt_templates(db, session.mode)
-        profile_bundle = await load_session_profile_bundle(
-            db, session.user_id, session.story_id
+        templates, profile_bundle, rc_turn = await asyncio.gather(
+            load_prompt_templates(db, session.mode),
+            load_session_profile_bundle(db, session.user_id, session.story_id),
+            get_rag_config_by_id(db, session.rag_config_id),
         )
         profile_used = profile_bundle_nonempty(profile_bundle)
-        t_r0 = time.perf_counter()
-        retrieved = await dispatch_retrieve(
+        cfg_turn = dict(rc_turn.config or {}) if rc_turn is not None else {}
+        neighbor_span = int(cfg_turn.get("turn_query_neighbor_span", 1))
+        retrieve_query, timeline_bias = await build_turn_retrieval_query_and_bias(
             db,
-            text,
-            session.story_version_id,
-            session.rag_config_id,
+            story_version_id=session.story_version_id,
+            plan=narrative_plan_for_hints,
+            state=state,
+            user_input=text,
+            neighbor_span=max(0, neighbor_span),
+        )
+        t_r0 = time.perf_counter()
+        retrieved, assistants = await asyncio.gather(
+            dispatch_retrieve(
+                db,
+                retrieve_query,
+                session.story_version_id,
+                session.rag_config_id,
+                timeline_bias=timeline_bias,
+            ),
+            _last_n_assistant_messages(db, session.id, 2),
         )
         retrieve_ms = int(round((time.perf_counter() - t_r0) * 1000))
         context = assemble_context(
@@ -573,7 +736,6 @@ async def process_turn_sse(
             token_budget=_TOKEN_BUDGET,
             profile=profile_bundle,
         )
-        assistants = await _last_n_assistant_messages(db, session.id, 2)
         prev_gm: str | None = None
         prev_prev_gm: str | None = None
         prev_meta: dict[str, Any] = {}
@@ -591,6 +753,7 @@ async def process_turn_sse(
             prev_meta=prev_meta,
             user_text=text,
             prev_prev_gm_content=prev_prev_gm,
+            narrative_plan=narrative_plan_for_hints,
         )
         prompt_user = text
         if settings.NARRATIVE_INPUT_BRIDGE:
@@ -744,77 +907,134 @@ async def process_turn_sse(
         raw_tail_source=splitter.accumulated_raw(),
     )
 
-    choices = list(parsed.choices)
-    choices_source_val = parsed.choices_source
-    if not choices:
-        choices = extract_choice_lines_from_narrative(narrative_for_db)
-        if choices:
-            choices_source_val = "narrative_regex"
-    if (
-        not choices
-        and settings.NARRATIVE_CHOICES_LLM_FALLBACK
-        and narrative_for_db.strip()
-    ):
-        t_fb = time.perf_counter()
-        try:
-            syn = await synthesize_choices_from_context(
-                user_input=text,
-                narrative=narrative_for_db,
-                assembled_context=context,
-                templates=templates,
-            )
-        except Exception as fb_exc:  # noqa: BLE001
-            logger.warning("turn choices LLM fallback error: %s", fb_exc)
-            syn = []
-        choices_llm_fallback_ms = int(round((time.perf_counter() - t_fb) * 1000))
-        if syn:
-            choices = syn
-            choices_source_val = "llm_fallback"
+    if parsed.parse_error:
+        su_for_player: dict[str, Any] = {}
+        plan_before = parse_narrative_plan(session.narrative_plan)
+        plan_after_orders = plan_before
+        is_terminal = False
+        completion_reason = ""
+    else:
+        raw_su = parsed.state_update if isinstance(parsed.state_update, dict) else {}
+        su_for_player, timeline_hint, arc_complete_flag = split_state_update_for_arc(
+            dict(raw_su)
+        )
+        plan_before = parse_narrative_plan(session.narrative_plan)
+        new_order = advance_timeline_order(plan_before, timeline_hint)
+        plan_after_orders = plan_before.model_copy(
+            update={"current_timeline_order": new_order}
+        )
+        is_terminal, completion_reason = evaluate_arc_completion(
+            plan_after_orders,
+            new_order,
+            arc_complete_hint=arc_complete_flag,
+            session_turn_count_before=session.turn_count,
+        )
 
-    choice_beats_val: list[str] | None = parsed.choice_beats
-    if choices_source_val in ("narrative_regex", "llm_fallback"):
+    turn_tac_for_choices: str | None = None
+    turn_timeline_heuristic_flag = False
+
+    if is_terminal:
+        choices = []
+        choices_source_val = "terminal_no_choices"
         choice_beats_val = None
+        choices_refined_flag = False
+        choices_grounding_failed = False
+        choices_grounding_attempts = 0
+        turn_source_override = None
+        turn_choices_deduped = False
+        grounding_total_ms = 0
+        ensure_total_ms = 0
+        ensure_min_two_synthesize_ms = 0
+    else:
+        choices = list(parsed.choices)
+        choices_source_val = parsed.choices_source
+        if not choices:
+            choices = extract_choice_lines_from_narrative(narrative_for_db)
+            if choices:
+                choices_source_val = "narrative_regex"
+        turn_tac_for_choices, _turn_orders = _choice_timeline_tac_and_orders(
+            narrative_plan_for_hints
+        )
 
-    t_gr = time.perf_counter()
-    (
-        choices,
-        choice_beats_val,
-        choices_refined_flag,
-        choices_grounding_failed,
-        choices_grounding_attempts,
-    ) = await _apply_choice_grounding_or_refine(
-        mode=session.mode,
-        narrative_excerpt=narrative_for_db,
-        state=state,
-        evidence_context=context,
-        choices=choices,
-        beats=choice_beats_val,
-        grounding_attempt_timings_ms=grounding_attempt_ms
-        if settings.NARRATIVE_TURN_TIMING_VERBOSE
-        else None,
-    )
-    grounding_total_ms = int(round((time.perf_counter() - t_gr) * 1000))
+        if (
+            not choices
+            and settings.NARRATIVE_CHOICES_LLM_FALLBACK
+            and narrative_for_db.strip()
+        ):
+            t_fb = time.perf_counter()
+            try:
+                syn = await synthesize_choices_from_context(
+                    user_input=text,
+                    narrative=narrative_for_db,
+                    assembled_context=context,
+                    templates=templates,
+                    timeline_arc_hint=turn_tac_for_choices,
+                )
+            except Exception as fb_exc:  # noqa: BLE001
+                logger.warning("turn choices LLM fallback error: %s", fb_exc)
+                syn = []
+            choices_llm_fallback_ms = int(round((time.perf_counter() - t_fb) * 1000))
+            if syn:
+                choices = syn
+                choices_source_val = "llm_fallback"
 
-    timing_syn: list[int] = []
-    t_en = time.perf_counter()
-    choices, choice_beats_val, turn_source_override, turn_choices_deduped = (
-        await ensure_at_least_two_choices(
+        choice_beats_val = parsed.choice_beats
+        if choices_source_val in ("narrative_regex", "llm_fallback"):
+            choice_beats_val = None
+
+        turn_timeline_heuristic_flag = _pre_grounding_timeline_heuristic_flag(
+            narrative_plan_for_hints, choices
+        )
+
+        t_gr = time.perf_counter()
+        (
+            choices,
+            choice_beats_val,
+            choices_refined_flag,
+            choices_grounding_failed,
+            choices_grounding_attempts,
+        ) = await _apply_choice_grounding_or_refine(
+            mode=session.mode,
+            narrative_excerpt=narrative_for_db,
+            state=state,
+            evidence_context=context,
             choices=choices,
             beats=choice_beats_val,
-            narrative=narrative_for_db,
-            user_input=text,
-            assembled_context=context,
-            templates=templates,
-            timing_synthesize_ms=timing_syn if settings.NARRATIVE_TURN_TIMING_LOG else None,
+            grounding_attempt_timings_ms=grounding_attempt_ms
+            if settings.NARRATIVE_TURN_TIMING_VERBOSE
+            else None,
+            narrative_plan=narrative_plan_for_hints,
+            session_id=session.id,
+            turn_number=current_turn,
         )
-    )
-    ensure_total_ms = int(round((time.perf_counter() - t_en) * 1000))
-    ensure_min_two_synthesize_ms = sum(timing_syn) if timing_syn else 0
-    if turn_source_override is not None:
-        choices_source_val = turn_source_override
+        grounding_total_ms = int(round((time.perf_counter() - t_gr) * 1000))
 
-    su = parsed.state_update if not parsed.parse_error else {}
-    validated = validate_state_update(state, su)
+        timing_syn: list[int] = []
+        t_en = time.perf_counter()
+        choices, choice_beats_val, turn_source_override, turn_choices_deduped = (
+            await ensure_at_least_two_choices(
+                choices=choices,
+                beats=choice_beats_val,
+                narrative=narrative_for_db,
+                user_input=text,
+                assembled_context=context,
+                templates=templates,
+                timing_synthesize_ms=timing_syn if settings.NARRATIVE_TURN_TIMING_LOG else None,
+                timeline_arc_hint=turn_tac_for_choices,
+            )
+        )
+        ensure_total_ms = int(round((time.perf_counter() - t_en) * 1000))
+        ensure_min_two_synthesize_ms = sum(timing_syn) if timing_syn else 0
+        if turn_source_override is not None:
+            choices_source_val = turn_source_override
+
+    validated = validate_state_update(state, su_for_player)
+
+    plan_to_persist = (
+        plan_after_orders.model_copy(update={"completion_reason": completion_reason})
+        if is_terminal
+        else plan_after_orders
+    )
 
     def _timing_error_payload(*, phase: str, message: str) -> dict[str, Any]:
         base: dict[str, Any] = {
@@ -854,12 +1074,20 @@ async def process_turn_sse(
             turn_meta["choices_deduplicated"] = True
         if turn_source_override in ("llm_fallback", "placeholder_fallback"):
             turn_meta["choices_min_enforced"] = True
+        if not is_terminal:
+            if settings.NARRATIVE_CHOICE_TIMELINE_HINT_ENABLED and turn_tac_for_choices:
+                turn_meta["choices_timeline_hint_applied"] = True
+            if turn_timeline_heuristic_flag:
+                turn_meta["choices_timeline_heuristic_flag"] = True
+        if is_terminal:
+            turn_meta["terminal_turn"] = True
+            turn_meta["completion_reason"] = completion_reason
         assert retrieved is not None  # 成功走过检索与组装的回合必有检索结果
         _attach_eval_grounding_snapshot(
             turn_meta,
             retrieved=retrieved,
             assembled_context=context,
-            query_text=text,
+            query_text=retrieve_query,
         )
         _merge_grounding_turn_meta(
             turn_meta,
@@ -881,9 +1109,16 @@ async def process_turn_sse(
                 session_id=session.id,
                 turn_number=current_turn,
                 event_type="state_change",
-                content={"choices": choices, "state_update": su, "parse_error": parsed.parse_error},
+                content={
+                    "choices": choices,
+                    "state_update": su_for_player,
+                    "parse_error": parsed.parse_error,
+                },
             )
         )
+        session.narrative_plan = narrative_plan_to_jsonable(plan_to_persist)
+        if is_terminal:
+            session.narrative_status = "completed"
         session.turn_count = current_turn
         session.updated_at = datetime.now(timezone.utc)
         await db.commit()
@@ -905,8 +1140,20 @@ async def process_turn_sse(
 
     post_stream_total_ms = int(round((time.perf_counter() - t_post_start) * 1000))
     t_sse = time.perf_counter()
-    yield _sse_line({"type": "choices", "choices": choices})
-    yield _sse_line({"type": "state_update", "state": validated})
+    if is_terminal:
+        yield _sse_line({"type": "state_update", "state": validated})
+        summary_tail = narrative_for_db.strip()[-400:] if narrative_for_db.strip() else ""
+        yield _sse_line(
+            {
+                "type": "completion",
+                "reason": completion_reason,
+                "summary": summary_tail or completion_reason,
+                "narrative_status": "completed",
+            }
+        )
+    else:
+        yield _sse_line({"type": "choices", "choices": choices})
+        yield _sse_line({"type": "state_update", "state": validated})
     if parsed.parse_error:
         yield _sse_line({"type": "error", "message": parsed.parse_error})
     yield _sse_line({"type": "done"})

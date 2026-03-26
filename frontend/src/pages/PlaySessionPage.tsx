@@ -1,5 +1,5 @@
 import axios from "axios";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2 } from "lucide-react";
@@ -10,7 +10,10 @@ import {
   getSessionState,
   postFeedback,
   postOpening,
+  postOpeningDeduped,
   resumeSession,
+  subscribeOpeningDedupe,
+  getOpeningDedupePending,
 } from "../api/sessionApi";
 import { getStory } from "../api/storyApi";
 import type { NarrativeState } from "../types/session";
@@ -58,12 +61,16 @@ export default function PlaySessionPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const openingHandledRef = useRef<number | null>(null);
+  /** 自动开场每个会话只触发一次 mutate（Strict Mode 下与 postOpeningDeduped 共同防重复 POST）。 */
+  const openingFlightRef = useRef<number | null>(null);
   const parseHintShownForMessageId = useRef<number | null>(null);
 
   const [freeInputMode, setFreeInputMode] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackMessageId, setFeedbackMessageId] = useState<number | null>(null);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
+  const [arcCompletedLocal, setArcCompletedLocal] = useState(false);
+  const [completionSummary, setCompletionSummary] = useState<string | null>(null);
 
   const messages = useSessionPlayStore((s) => s.messages);
   const choices = useSessionPlayStore((s) => s.choices);
@@ -122,6 +129,8 @@ export default function PlaySessionPage() {
 
   const sessionActive = session?.status === "active";
   const archived = session?.status === "archived";
+  const storyLineComplete =
+    session?.narrative_status === "completed" || arcCompletedLocal;
 
   const needOpening =
     Number.isFinite(sessionId) &&
@@ -129,12 +138,46 @@ export default function PlaySessionPage() {
     messagesData !== undefined &&
     !messagesData.some((m) => m.role === "assistant");
 
-  const openingQuery = useQuery({
-    queryKey: ["sessionOpening", sessionId],
-    queryFn: () => postOpening(sessionId),
-    enabled: needOpening && sessionActive,
-    retry: 1,
-    staleTime: Infinity,
+  const openingDedupePending = useSyncExternalStore(
+    (onStoreChange) =>
+      Number.isFinite(sessionId)
+        ? subscribeOpeningDedupe(sessionId, onStoreChange)
+        : () => {},
+    () => (Number.isFinite(sessionId) ? getOpeningDedupePending(sessionId) : false),
+    () => false
+  );
+
+  const openingMut = useMutation({
+    mutationFn: (vars: { forceRetry?: boolean } = {}) =>
+      vars.forceRetry ? postOpening(sessionId) : postOpeningDeduped(sessionId),
+    onSuccess: async (data) => {
+      if (!Number.isFinite(sessionId)) return;
+      if (openingHandledRef.current === sessionId) return;
+      openingHandledRef.current = sessionId;
+      if (data.parse_error) {
+        toast.error(data.parse_error);
+      }
+      if (data.choices?.length) {
+        useSessionPlayStore.getState().setChoices(data.choices);
+      }
+      const su = data.state_update;
+      if (su && typeof su === "object") {
+        useSessionPlayStore
+          .getState()
+          .replaceLatestState(normalizeNarrativeState(su as Record<string, unknown>));
+      }
+      await qc.invalidateQueries({ queryKey: ["sessionMessages", sessionId] });
+      await qc.invalidateQueries({ queryKey: ["sessionState", sessionId] });
+      await qc.invalidateQueries({ queryKey: ["session", sessionId] });
+    },
+    onError: (err) => {
+      if (!Number.isFinite(sessionId)) return;
+      if (axios.isAxiosError(err) && err.response?.status === 409) {
+        void qc.invalidateQueries({ queryKey: ["sessionMessages", sessionId] });
+        return;
+      }
+      toastApiError(err, "开场生成失败");
+    },
   });
 
   const archiveMut = useMutation({
@@ -160,7 +203,16 @@ export default function PlaySessionPage() {
 
   useEffect(() => {
     openingHandledRef.current = null;
+    openingFlightRef.current = null;
+    setArcCompletedLocal(false);
+    setCompletionSummary(null);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (session?.narrative_status === "completed") {
+      setArcCompletedLocal(true);
+    }
+  }, [session?.narrative_status]);
 
   useEffect(() => {
     if (sessionError) toastApiError(sessionError, "加载会话失败");
@@ -170,36 +222,18 @@ export default function PlaySessionPage() {
     if (messagesError) toastApiError(messagesError, "加载消息失败");
   }, [messagesError]);
 
-  useEffect(() => {
-    if (!openingQuery.isSuccess || !openingQuery.data || !Number.isFinite(sessionId)) return;
-    if (openingHandledRef.current === sessionId) return;
-    openingHandledRef.current = sessionId;
-    if (openingQuery.data.parse_error) {
-      toast.error(openingQuery.data.parse_error);
-    }
-    if (openingQuery.data.choices?.length) {
-      useSessionPlayStore.getState().setChoices(openingQuery.data.choices);
-    }
-    const su = openingQuery.data.state_update;
-    if (su && typeof su === "object") {
-      useSessionPlayStore
-        .getState()
-        .replaceLatestState(normalizeNarrativeState(su as Record<string, unknown>));
-    }
-    void qc.invalidateQueries({ queryKey: ["sessionMessages", sessionId] });
-    void qc.invalidateQueries({ queryKey: ["sessionState", sessionId] });
-    void qc.invalidateQueries({ queryKey: ["session", sessionId] });
-  }, [openingQuery.isSuccess, openingQuery.data, sessionId, qc]);
+  const openingMutateRef = useRef(openingMut.mutate);
+  openingMutateRef.current = openingMut.mutate;
 
   useEffect(() => {
-    if (!openingQuery.isError || !openingQuery.error || !Number.isFinite(sessionId)) return;
-    const err = openingQuery.error;
-    if (axios.isAxiosError(err) && err.response?.status === 409) {
-      void qc.invalidateQueries({ queryKey: ["sessionMessages", sessionId] });
-    } else {
-      toastApiError(err, "开场生成失败");
+    if (!needOpening || !sessionActive || !Number.isFinite(sessionId)) {
+      openingFlightRef.current = null;
+      return;
     }
-  }, [openingQuery.isError, openingQuery.error, sessionId, qc]);
+    if (openingFlightRef.current === sessionId) return;
+    openingFlightRef.current = sessionId;
+    openingMutateRef.current({});
+  }, [needOpening, sessionActive, sessionId]);
 
   useEffect(() => {
     if (!Number.isFinite(sessionId)) return;
@@ -262,7 +296,14 @@ export default function PlaySessionPage() {
 
   const sendUserContent = useCallback(
     async (content: string) => {
-      if (!Number.isFinite(sessionId) || streaming || archived) return;
+      if (
+        !Number.isFinite(sessionId) ||
+        streaming ||
+        archived ||
+        storyLineComplete ||
+        needOpening
+      )
+        return;
       const trimmed = content.trim();
       if (!trimmed) return;
 
@@ -287,6 +328,11 @@ export default function PlaySessionPage() {
           onToken: (t) => appendStreamToken(t),
           onChoices: (c) => setChoices(c),
           onStateUpdate: (st) => replaceLatestState(normalizeNarrativeState(st)),
+          onCompletion: (p) => {
+            setChoices([]);
+            setArcCompletedLocal(true);
+            setCompletionSummary(p.summary?.trim() || p.reason || null);
+          },
           onError: (msg) => {
             toast.error(msg);
             setParseError(msg);
@@ -305,6 +351,8 @@ export default function PlaySessionPage() {
       sessionId,
       streaming,
       archived,
+      storyLineComplete,
+      needOpening,
       addUserMessage,
       beginAssistantStream,
       appendStreamToken,
@@ -348,12 +396,23 @@ export default function PlaySessionPage() {
 
   const displayTitle = storyTitle || story?.title || "加载中…";
   const mode = session?.mode ?? "strict";
-  const inputLocked = streaming || archived;
+  const inputLocked = streaming || archived || storyLineComplete;
 
   const streamingAssistantCharCount = useMemo(() => {
     const a = messages.find((m) => m.role === "assistant" && m.streaming);
     return a ? (a.content ?? "").length : 0;
   }, [messages]);
+
+  const openingPreparing = needOpening && (openingMut.isPending || openingDedupePending);
+  const openingFailRetryable =
+    needOpening &&
+    openingMut.isError &&
+    !(axios.isAxiosError(openingMut.error) && openingMut.error.response?.status === 409);
+  const choiceAreaLocked = inputLocked || needOpening;
+
+  const handleRetryOpening = useCallback(() => {
+    openingMut.mutate({ forceRetry: true });
+  }, [openingMut]);
 
   return (
     <div className="mx-auto flex h-[calc(100vh-3.5rem)] min-w-[1024px] max-w-[1200px] flex-col overflow-hidden px-8 py-6">
@@ -395,26 +454,81 @@ export default function PlaySessionPage() {
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {archived && (
               <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-warning/30 bg-warning/10 px-4 py-2 font-ui text-sm text-text-primary">
-                <span>会话已归档，无法发送新消息。</span>
-                <Button
-                  size="sm"
-                  variant="primary"
-                  isLoading={resumeMut.isPending}
-                  onClick={() => resumeMut.mutate()}
-                >
-                  恢复并继续
-                </Button>
-                <Link
-                  to={`/history/${sessionId}`}
-                  className="text-sm text-accent-primary underline hover:brightness-110"
-                >
-                  查看回看
-                </Link>
+                {session.narrative_status === "completed" ? (
+                  <>
+                    <span>故事线已完成，会话已归档。仅可回看，无法继续推进或恢复游玩。</span>
+                    <Link
+                      to={`/history/${sessionId}`}
+                      className="text-sm text-accent-primary underline hover:brightness-110"
+                    >
+                      查看回看
+                    </Link>
+                  </>
+                ) : (
+                  <>
+                    <span>会话已归档，无法发送新消息。</span>
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      isLoading={resumeMut.isPending}
+                      onClick={() => resumeMut.mutate()}
+                    >
+                      恢复并继续
+                    </Button>
+                    <Link
+                      to={`/history/${sessionId}`}
+                      className="text-sm text-accent-primary underline hover:brightness-110"
+                    >
+                      查看回看
+                    </Link>
+                  </>
+                )}
+              </div>
+            )}
+            {sessionActive && storyLineComplete && (
+              <div className="flex shrink-0 flex-col gap-2 border-b border-accent-primary/25 bg-accent-primary/10 px-4 py-3 font-ui text-sm text-text-primary">
+                <span className="font-medium">故事线已完成</span>
+                {completionSummary ? (
+                  <p className="line-clamp-3 text-xs text-text-secondary">{completionSummary}</p>
+                ) : null}
+                <div className="flex flex-wrap gap-2">
+                  <Link
+                    to={`/history/${sessionId}`}
+                    className="inline-flex items-center rounded-lg border border-border bg-bg-secondary px-3 py-1.5 text-sm hover:bg-bg-hover"
+                  >
+                    查看回看
+                  </Link>
+                  <Link
+                    to={`/stories/${session.story_id}/new-session`}
+                    className="inline-flex items-center rounded-lg bg-accent-primary px-3 py-1.5 text-sm text-white hover:brightness-110"
+                  >
+                    新开一局
+                  </Link>
+                </div>
               </div>
             )}
             {parseError && (
               <div className="shrink-0 border-b border-border bg-danger/10 px-4 py-2 font-ui text-xs text-danger">
                 {parseError}
+              </div>
+            )}
+            {openingPreparing && (
+              <div className="flex shrink-0 items-center gap-2 border-b border-border bg-bg-secondary px-4 py-3 font-ui text-sm text-text-secondary">
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-accent-primary" />
+                <span>开场白准备中……</span>
+              </div>
+            )}
+            {openingFailRetryable && (
+              <div className="flex shrink-0 flex-wrap items-center gap-3 border-b border-border bg-danger/10 px-4 py-3 font-ui text-sm text-text-primary">
+                <span className="text-danger">开场生成失败，请重试。</span>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  isLoading={openingMut.isPending}
+                  onClick={handleRetryOpening}
+                >
+                  重试开场
+                </Button>
               </div>
             )}
             <div
@@ -434,19 +548,21 @@ export default function PlaySessionPage() {
               ))}
             </div>
 
-            <ChoicePanel
-              choices={choices}
-              disabled={inputLocked}
-              streaming={streaming}
-              streamingNarrativeCharCount={streamingAssistantCharCount}
-              freeInputMode={freeInputMode}
-              onToggleFreeInput={setFreeInputMode}
-              onSelectChoice={(text) => void sendUserContent(text)}
-            />
+            {!storyLineComplete && (
+              <ChoicePanel
+                choices={choices}
+                disabled={choiceAreaLocked}
+                streaming={streaming}
+                streamingNarrativeCharCount={streamingAssistantCharCount}
+                freeInputMode={freeInputMode}
+                onToggleFreeInput={setFreeInputMode}
+                onSelectChoice={(text) => void sendUserContent(text)}
+              />
+            )}
 
-            {freeInputMode && (
+            {!storyLineComplete && freeInputMode && (
               <MessageInput
-                disabled={archived}
+                disabled={archived || needOpening}
                 streaming={streaming}
                 onSend={(t) => void sendUserContent(t)}
               />
@@ -454,7 +570,12 @@ export default function PlaySessionPage() {
           </div>
 
           <div className="flex h-full min-h-0 shrink-0 self-stretch">
-            <StatePanel state={latestState} highlightKeys={stateHighlightKeys} />
+            <StatePanel
+              state={latestState}
+              highlightKeys={stateHighlightKeys}
+              narrativeStatus={session.narrative_status}
+              narrativePlan={session.narrative_plan}
+            />
           </div>
         </div>
       )}

@@ -27,7 +27,12 @@ from app.schemas.session import (
     SessionStateSnapshot,
     UserFeedbackOut,
 )
-from app.services.narrative.engine import generate_opening, process_turn_sse
+from app.services.narrative.engine import EmptyOpeningNarrativeError, generate_opening, process_turn_sse
+from app.services.narrative.session_validators import validate_session_ready_for_opening
+from app.services.narrative.session_arc_planner import (
+    apply_narrative_plan_to_session,
+    plan_session_arc,
+)
 from app.services.narrative.state import initialize_state
 from app.services.rag.dispatcher import get_active_rag_config, get_rag_config_by_id
 
@@ -112,6 +117,9 @@ async def create_session(
     db.add(sess)
     await db.flush()
 
+    arc_plan = await plan_session_arc(db, sess)
+    apply_narrative_plan_to_session(sess, arc_plan, narrative_status="opening_pending")
+
     db.add(
         SessionState(
             session_id=sess.id,
@@ -167,7 +175,26 @@ async def create_opening_narrative(
         if (ac or 0) > 0:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已存在助手消息，无需重复生成开场")
 
-        out = await generate_opening(db, sess)
+        await validate_session_ready_for_opening(db, sess)
+
+        ac2 = await db.scalar(
+            select(func.count())
+            .select_from(SessionMessage)
+            .where(
+                SessionMessage.session_id == session_id,
+                SessionMessage.role == "assistant",
+            )
+        )
+        if (ac2 or 0) > 0:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="已存在助手消息，无需重复生成开场")
+
+        try:
+            out = await generate_opening(db, sess)
+        except EmptyOpeningNarrativeError:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="开场叙事生成失败：正文为空，请稍后重试",
+            ) from None
         return OpeningGenerationResponse(
             narrative=out.narrative,
             choices=out.choices,
@@ -183,6 +210,20 @@ async def stream_session_message(
     user: User = Depends(get_current_user),
 ):
     """流式叙事回合（SSE）。使用独立 DB 会话，避免与 get_db 长事务冲突。"""
+    async with async_session_factory() as db:
+        sess = await db.get(NarrativeSession, session_id)
+        if sess is None or sess.user_id != user.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="会话不存在")
+        if sess.status != "active":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="会话已归档或非活跃",
+            )
+        if sess.narrative_status == "completed":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="会话故事线已完成，无法继续推进",
+            )
 
     async def event_stream():
         async with async_session_factory() as db:
@@ -193,6 +234,10 @@ async def stream_session_message(
                 return
             if sess.status != "active":
                 yield 'data: {"type":"error","message":"会话已归档或非活跃"}\n\n'
+                yield 'data: {"type":"done"}\n\n'
+                return
+            if sess.narrative_status == "completed":
+                yield 'data: {"type":"error","message":"会话故事线已完成，无法继续推进"}\n\n'
                 yield 'data: {"type":"done"}\n\n'
                 return
             async for line in process_turn_sse(db, sess, body.content):
@@ -255,6 +300,11 @@ async def resume_session(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="仅支持从已归档状态恢复会话",
+        )
+    if sess.narrative_status == "completed":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="故事线已完成，无法恢复为可推进状态",
         )
     sess.status = "active"
     sess.updated_at = datetime.now(timezone.utc)

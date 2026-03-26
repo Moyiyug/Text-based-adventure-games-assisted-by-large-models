@@ -80,6 +80,8 @@ async def list_all_sessions(
                 rag_config_id=s.rag_config_id,
                 mode=s.mode,
                 status=s.status,
+                narrative_status=s.narrative_status,
+                narrative_plan=dict(s.narrative_plan or {}),
                 turn_count=s.turn_count,
                 opening_goal=s.opening_goal,
                 created_at=s.created_at,

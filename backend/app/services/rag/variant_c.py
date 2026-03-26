@@ -12,7 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.content import TextChunk
 from app.models.knowledge import Entity, Relationship, TimelineEvent
 from app.services.llm.deepseek import deepseek_chat
-from app.services.rag.base import BaseRetriever, RetrievedChunk, RetrievalResult, StructuredHit
+from app.services.rag.base import (
+    BaseRetriever,
+    RetrievedChunk,
+    RetrievalResult,
+    StructuredHit,
+    TimelineRetrievalBias,
+)
 from app.services.rag.chroma_query import chroma_query_chunk_ids
 
 
@@ -55,7 +61,10 @@ class StructuredRetriever(BaseRetriever):
         query: str,
         story_version_id: int,
         config: dict,
+        *,
+        timeline_bias: TimelineRetrievalBias | None = None,
     ) -> RetrievalResult:
+        _ = timeline_bias  # naive_hybrid 已实现；structured 暂忽略，保留接口
         text_top_k = int(config.get("text_top_k", 3))
         event_top_k = int(config.get("event_top_k", 5))
 

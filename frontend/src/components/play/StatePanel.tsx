@@ -6,6 +6,9 @@ import { cn } from "../../lib/utils";
 interface StatePanelProps {
   state: NarrativeState | null;
   highlightKeys: string[];
+  /** Phase 11：来自 GET session */
+  narrativeStatus?: string;
+  narrativePlan?: Record<string, unknown> | null;
 }
 
 function Tag({ children }: { children: React.ReactNode }) {
@@ -24,7 +27,25 @@ function npcDotClass(relation: string): string {
   return "bg-text-secondary";
 }
 
-export function StatePanel({ state, highlightKeys }: StatePanelProps) {
+function planStr(plan: Record<string, unknown> | null | undefined, key: string): string {
+  if (!plan || typeof plan !== "object") return "";
+  const v = plan[key];
+  return typeof v === "string" ? v.trim() : "";
+}
+
+function planNum(plan: Record<string, unknown> | null | undefined, key: string): string {
+  if (!plan || typeof plan !== "object") return "—";
+  const v = plan[key];
+  if (typeof v === "number" && Number.isFinite(v)) return String(v);
+  return "—";
+}
+
+export function StatePanel({
+  state,
+  highlightKeys,
+  narrativeStatus,
+  narrativePlan,
+}: StatePanelProps) {
   const [collapsed, setCollapsed] = useState(true);
 
   const loc = state?.current_location?.trim() || "";
@@ -89,6 +110,48 @@ export function StatePanel({ state, highlightKeys }: StatePanelProps) {
 
       {!collapsed && (
         <div className="flex flex-1 flex-col gap-0 overflow-y-auto p-3">
+          {(narrativeStatus || narrativePlan) && (
+            <>
+              <div className="rounded-lg border border-border/80 bg-bg-primary/40 px-2 py-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs" aria-hidden>
+                    🧭
+                  </span>
+                  <span className="font-ui text-xs text-text-secondary">叙事弧线</span>
+                </div>
+                <div className="mt-1 space-y-1 pl-5 font-ui text-xs text-text-primary">
+                  <p>
+                    <span className="text-text-secondary">阶段：</span>
+                    {narrativeStatus === "completed"
+                      ? "已完成"
+                      : narrativeStatus === "opening_pending"
+                        ? "待开场"
+                        : narrativeStatus === "in_progress"
+                          ? "进行中"
+                          : narrativeStatus || "—"}
+                  </p>
+                  {planStr(narrativePlan, "opening_anchor_summary") ? (
+                    <p className="line-clamp-2">
+                      <span className="text-text-secondary">锚点：</span>
+                      {planStr(narrativePlan, "opening_anchor_summary")}
+                    </p>
+                  ) : null}
+                  {planStr(narrativePlan, "arc_goal") ? (
+                    <p className="line-clamp-2">
+                      <span className="text-text-secondary">弧线目标：</span>
+                      {planStr(narrativePlan, "arc_goal")}
+                    </p>
+                  ) : null}
+                  <p>
+                    <span className="text-text-secondary">时间线次序：</span>
+                    {planNum(narrativePlan, "current_timeline_order")} / 上界{" "}
+                    {planNum(narrativePlan, "arc_end_order")}
+                  </p>
+                </div>
+              </div>
+              <div className="my-3 h-px bg-border" />
+            </>
+          )}
           {row(
             "current_location",
             "当前位置",
